@@ -16,6 +16,56 @@
 #include <map>
 
 
+
+void calcGST(const cv::Mat& inputImg, cv::Mat& imgCoherencyOut, cv::Mat& imgOrientationOut, int w = 52)
+{
+    using namespace cv;
+
+    Mat img;
+    inputImg.convertTo(img, CV_32F);
+    // GST components calculation (start)
+    // J =  (J11 J12; J12 J22) - GST
+    Mat imgDiffX, imgDiffY, imgDiffXY;
+    Sobel(img, imgDiffX, CV_32F, 1, 0, 3);
+    Sobel(img, imgDiffY, CV_32F, 0, 1, 3);
+    multiply(imgDiffX, imgDiffY, imgDiffXY);
+    Mat imgDiffXX, imgDiffYY;
+    multiply(imgDiffX, imgDiffX, imgDiffXX);
+    multiply(imgDiffY, imgDiffY, imgDiffYY);
+    Mat J11, J22, J12;      // J11, J22 and J12 are GST components
+    boxFilter(imgDiffXX, J11, CV_32F, Size(w, w));
+    boxFilter(imgDiffYY, J22, CV_32F, Size(w, w));
+    boxFilter(imgDiffXY, J12, CV_32F, Size(w, w));
+    // GST components calculation (stop)
+    // eigenvalue calculation (start)
+    // lambda1 = 0.5*(J11 + J22 + sqrt((J11-J22)^2 + 4*J12^2))
+    // lambda2 = 0.5*(J11 + J22 - sqrt((J11-J22)^2 + 4*J12^2))
+    Mat tmp1, tmp2, tmp3, tmp4;
+    tmp1 = J11 + J22;
+    tmp2 = J11 - J22;
+    multiply(tmp2, tmp2, tmp2);
+    multiply(J12, J12, tmp3);
+    sqrt(tmp2 + 4.0 * tmp3, tmp4);
+    Mat lambda1, lambda2;
+    lambda1 = tmp1 + tmp4;
+    lambda1 = 0.5*lambda1;      // biggest eigenvalue
+    lambda2 = tmp1 - tmp4;
+    lambda2 = 0.5*lambda2;      // smallest eigenvalue
+    // eigenvalue calculation (stop)
+    // Coherency calculation (start)
+    // Coherency = (lambda1 - lambda2)/(lambda1 + lambda2)) - measure of anisotropism
+    // Coherency is anisotropy degree (consistency of local orientation)
+    divide(lambda1 - lambda2, lambda1 + lambda2, imgCoherencyOut);
+    // Coherency calculation (stop)
+    // orientation angle calculation (start)
+    // tan(2*Alpha) = 2*J12/(J22 - J11)
+    // Alpha = 0.5 atan2(2*J12/(J22 - J11))
+    phase(J22 - J11, 2.0*J12, imgOrientationOut, false);
+    imgOrientationOut = 0.5*imgOrientationOut;
+    // orientation angle calculation (stop)
+}
+
+
 //const int IMAGE_DIMENSION = 800;
 const int IMAGE_DIMENSION = 512;
 
@@ -93,7 +143,7 @@ void CallBackFunc(int event, int x, int y, int flags, void* userdata)
         imshow("The plot", plot_result);
 
         cv::Mat magI(WINDOW_DIMENSION, WINDOW_DIMENSION, CV_32FC1);
-        for (int j = 0; j < WINDOW_DIMENSION * WINDOW_DIMENSION; ++j)
+        for (int j = 1; j < WINDOW_DIMENSION * WINDOW_DIMENSION; ++j)
         {
             const auto amplitude = std::abs(transformed[sourceOffset * WINDOW_DIMENSION * WINDOW_DIMENSION + j]);
             magI.at<float>(j / WINDOW_DIMENSION, j % WINDOW_DIMENSION) = amplitude;
@@ -156,6 +206,165 @@ void CallBackFunc(int event, int x, int y, int flags, void* userdata)
     }
 }
 
+//////////////////////////////////////////////////////////////////////////////
+
+// Generate a uniform distribution of the number between[0, 1]
+double uniformRandom(void)
+{
+    return (double)rand() / (double)RAND_MAX;
+}
+
+// Fit the line according to the point set ax + by + c = 0, res is the residual
+void calcLinePara(const std::vector<cv::Point2d>& pts, double &a, double &b, double &c, double &res)
+{
+    res = 0;
+    cv::Vec4f line;
+    std::vector<cv::Point2f> ptsF;
+    for (unsigned int i = 0; i < pts.size(); i++)
+        ptsF.push_back(pts[i]);
+
+    cv::fitLine(ptsF, line, cv::DIST_L2, 0, 1e-2, 1e-2);
+    a = line[1];
+    b = -line[0];
+    c = line[0] * line[3] - line[1] * line[2];
+
+    for (unsigned int i = 0; i < pts.size(); i++)
+    {
+        double resid_ = fabs(pts[i].x * a + pts[i].y * b + c);
+        res += resid_;
+    }
+    res /= pts.size();
+}
+
+// Get a straight line fitting sample, that is, randomly select 2 points on the line sampling point set
+bool getSample(const std::vector<int>& set, std::vector<int> &sset)
+{
+    int i[2];
+    if (set.size() > 2)
+    {
+        do
+        {
+            for (int n = 0; n < 2; n++)
+                i[n] = int(uniformRandom() * (set.size() - 1));
+        } while (!(i[1] != i[0]));
+        for (int n = 0; n < 2; n++)
+        {
+            sset.push_back(i[n]);
+        }
+    }
+    else
+    {
+        return false;
+    }
+    return true;
+}
+
+//The position of two random points in the line sample cannot be too close
+bool verifyComposition(const std::vector<cv::Point2d>& pts)
+{
+    cv::Point2d pt1 = pts[0];
+    cv::Point2d pt2 = pts[1];
+    if (abs(pt1.x - pt2.x) < 5 && abs(pt1.y - pt2.y) < 5)
+        return false;
+
+    return true;
+}
+
+
+//RANSAC straight line fitting
+void fitLineRANSAC(const std::vector<cv::Point2d>& ptSet, 
+    double &a, double &b, double &c, std::vector<bool> &inlierFlag)
+{
+    //double residual_error = 2.99; // inner point threshold
+    const double residual_error = 10; // inner point threshold
+
+    bool stop_loop = false;
+    int maximum = 0; //maximum number of points
+
+    //final inner point identifier and its residual
+    inlierFlag = std::vector<bool>(ptSet.size(), false);
+    std::vector<double> resids_(ptSet.size(), 3);
+    int sample_count = 0;
+    int N = 500;
+
+    double res = 0;
+
+    // RANSAC
+    srand((unsigned int)time(NULL)); //Set random number seed
+    std::vector<int> ptsID;
+    for (unsigned int i = 0; i < ptSet.size(); i++)
+        ptsID.push_back(i);
+    while (N > sample_count && !stop_loop)
+    {
+        std::vector<bool> inlierstemp;
+        std::vector<double> residualstemp;
+        std::vector<int> ptss;
+        int inlier_count = 0;
+        if (!getSample(ptsID, ptss))
+        {
+            stop_loop = true;
+            continue;
+        }
+
+        std::vector<cv::Point2d> pt_sam;
+        pt_sam.push_back(ptSet[ptss[0]]);
+        pt_sam.push_back(ptSet[ptss[1]]);
+
+        if (!verifyComposition(pt_sam))
+        {
+            ++sample_count;
+            continue;
+        }
+
+        // Calculate the line equation
+            calcLinePara(pt_sam, a, b, c, res);
+        //Inside point test
+        for (unsigned int i = 0; i < ptSet.size(); i++)
+        {
+            cv::Point2d pt = ptSet[i];
+            double resid_ = fabs(pt.x * a + pt.y * b + c);
+            residualstemp.push_back(resid_);
+            inlierstemp.push_back(false);
+            if (resid_ < residual_error)
+            {
+                ++inlier_count;
+                inlierstemp[i] = true;
+            }
+        }
+        // find the best fit straight line
+        if (inlier_count >= maximum)
+        {
+            maximum = inlier_count;
+            resids_ = residualstemp;
+            inlierFlag = inlierstemp;
+        }
+        // Update the number of RANSAC iterations, as well as the probability of interior points
+        if (inlier_count == 0)
+        {
+            N = 500;
+        }
+        else
+        {
+            double epsilon = 1.0 - double(inlier_count) / (double)ptSet.size(); // wild value point scale
+            double p = 0.99; //the probability of having 1 good sample in all samples
+            double s = 2.0;
+            N = int(log(1.0 - p) / log(1.0 - pow((1.0 - epsilon), s)));
+        }
+        ++sample_count;
+    }
+
+    // Use all the interior points to re - fit the line
+    std::vector<cv::Point2d> pset;
+    for (unsigned int i = 0; i < ptSet.size(); i++)
+    {
+        if (inlierFlag[i])
+            pset.push_back(ptSet[i]);
+    }
+
+    calcLinePara(pset, a, b, c, res);
+}
+
+
 
 int main(int argc, char *argv[])
 {
@@ -185,12 +394,14 @@ int main(int argc, char *argv[])
     cv::Mat func;
     funcFloat.convertTo(func, CV_8U);
 
+    cv::Mat imgCoherency, imgOrientation;
+    calcGST(funcFloat, imgCoherency, imgOrientation);
+
     //volatile 
     auto transformed = tswdft2d<float>((float*)img.data, WINDOW_DIMENSION, WINDOW_DIMENSION, img.rows, img.cols);
 
     cv::Mat visualization(visualizationRows, visualizationCols, CV_32FC1);
     cv::Mat amplitude(visualizationRows, visualizationCols, CV_32FC1);
-    cv::Mat vertical(visualizationRows, visualizationCols, CV_32FC1);
 
     for (int y = 0; y < visualizationRows; ++y)
         for (int x = 0; x < visualizationCols; ++x)
@@ -236,8 +447,41 @@ int main(int argc, char *argv[])
             visualization.at<float>(y, x) = logf(freq + 1.);
             amplitude.at<float>(y, x) = logf(threshold + 1.);
 
+            //vertical.at<float>(y, x) = logf(v + 1.);
+        }
+
+    cv::Mat vertical(visualizationRows, visualizationCols, CV_32FC1);
+    for (int y = 0; y < visualizationRows; ++y)
+        for (int x = 0; x < visualizationCols; ++x)
+        {
+            const auto sourceOffset = y * visualizationCols + x;
+
+            //float offsets[WINDOW_DIMENSION * WINDOW_DIMENSION - 1];
+            //float amplitudes[WINDOW_DIMENSION * WINDOW_DIMENSION - 1];
+
+            //std::map<float, float> ordered;
+
+            double v = 0;
+
+            for (int j = 1; j < WINDOW_DIMENSION* WINDOW_DIMENSION; ++j)
+            {
+                if (j / WINDOW_DIMENSION > WINDOW_DIMENSION / 2 || j % WINDOW_DIMENSION > WINDOW_DIMENSION / 2)
+                    continue;
+
+                const auto amplitude = std::abs(transformed[sourceOffset * WINDOW_DIMENSION * WINDOW_DIMENSION + j]);// / sqrtf(j);
+                //const auto freq = hypot(j / WINDOW_DIMENSION, j % WINDOW_DIMENSION);
+                //if (freq > 2)
+                //    ordered[freq] = std::max(ordered[freq], amplitude);
+
+                if (j % WINDOW_DIMENSION == 0)
+                    v += amplitude;
+            }
+
             vertical.at<float>(y, x) = logf(v + 1.);
         }
+
+
+
 
     cv::normalize(visualization, visualization, 0, 1, cv::NORM_MINMAX);
     cv::normalize(amplitude, amplitude, 0, 1, cv::NORM_MINMAX);
@@ -251,9 +495,12 @@ int main(int argc, char *argv[])
 
     cv::imshow("vertical", vertical);
 
-    cv::Mat borderline(visualizationRows, visualizationCols, CV_8UC1);
+    cv::Mat borderline(visualizationRows, visualizationCols, CV_8UC1, cv::Scalar(0));
 
     // border line
+    std::vector<cv::Point2d> ptSet;
+
+
     for (int y = 0; y < visualizationRows - 1; ++y)
         for (int x = 0; x < visualizationCols; ++x)
         {
@@ -284,11 +531,31 @@ int main(int argc, char *argv[])
             //if (freq1 > 2 && freq1 >= ((freq2 * 3 / 5 - 1)) && freq1 <= ((freq2 * 3 / 5 + 1)))
             if (freq2 >= freq1 * 5 / 3 && freq2 <= freq1 * 5 / 2)
             {
-                borderline.at<uchar>(y, x) = 255;
+                const auto coherency = imgCoherency.at<float>(y + WINDOW_DIMENSION / 2, x + WINDOW_DIMENSION / 2);
+                if (coherency > 0.5)
+                    //borderline.at<uchar>(y, x) = 255;
+                    ptSet.push_back(cv::Point2d(x, y));
             }
         }
 
+    double A, B, C;
+    std::vector<bool> inliers;
+    fitLineRANSAC(ptSet, A, B, C, inliers);
+    for (unsigned int i = 0; i < ptSet.size(); ++i) {
+        if (inliers[i])
+            borderline.at<uchar>(ptSet[i].y, ptSet[i].x) = 255;
+    }
+
     cv::imshow("borderline", borderline);
+
+    //imgCoherency *= 10;
+    //cv::exp(imgCoherency, imgCoherency);
+
+    cv::normalize(imgCoherency, imgCoherency, 0, 1, cv::NORM_MINMAX);
+    cv::normalize(imgOrientation, imgOrientation, 0, 1, cv::NORM_MINMAX);
+
+    cv::imshow("imgCoherency", imgCoherency);
+    cv::imshow("imgOrientation", imgOrientation);
 
 
     cv::setMouseCallback("func", CallBackFunc, &transformed);
