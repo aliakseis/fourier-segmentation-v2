@@ -15,7 +15,7 @@
 #include <iostream>
 #include <map>
 
-
+#include <random>
 
 void calcGST(const cv::Mat& inputImg, cv::Mat& imgCoherencyOut, cv::Mat& imgOrientationOut, int w = 52)
 {
@@ -208,12 +208,50 @@ void CallBackFunc(int event, int x, int y, int flags, void* userdata)
 
 //////////////////////////////////////////////////////////////////////////////
 
+bool polynomial_curve_fit(const std::vector<cv::Point2d>& key_point, int n, cv::Mat& A)
+{
+    //Number of key points
+    int N = key_point.size();
+
+    //Construct matrix X
+    cv::Mat X = cv::Mat::zeros(n + 1, n + 1, CV_64FC1);
+    for (int i = 0; i < n + 1; i++)
+    {
+        for (int j = 0; j < n + 1; j++)
+        {
+            for (int k = 0; k < N; k++)
+            {
+                X.at<double>(i, j) = X.at<double>(i, j) +
+                    std::pow(key_point[k].x, i + j);
+            }
+        }
+    }
+
+    //Construct matrix Y
+    cv::Mat Y = cv::Mat::zeros(n + 1, 1, CV_64FC1);
+    for (int i = 0; i < n + 1; i++)
+    {
+        for (int k = 0; k < N; k++)
+        {
+            Y.at<double>(i, 0) = Y.at<double>(i, 0) +
+                std::pow(key_point[k].x, i) * key_point[k].y;
+        }
+    }
+
+    A = cv::Mat::zeros(n + 1, 1, CV_64FC1);
+    //Solve matrix A
+    cv::solve(X, Y, A, cv::DECOMP_LU);
+    return true;
+}
+
+
 // Generate a uniform distribution of the number between[0, 1]
 double uniformRandom(void)
 {
     return (double)rand() / (double)RAND_MAX;
 }
 
+/*
 // Fit the line according to the point set ax + by + c = 0, res is the residual
 void calcLinePara(const std::vector<cv::Point2d>& pts, double &a, double &b, double &c, double &res)
 {
@@ -235,37 +273,86 @@ void calcLinePara(const std::vector<cv::Point2d>& pts, double &a, double &b, dou
     }
     res /= pts.size();
 }
+*/
 
 // Get a straight line fitting sample, that is, randomly select 2 points on the line sampling point set
-bool getSample(const std::vector<int>& set, std::vector<int> &sset)
+#if 0
+bool getSample(const std::vector<int>& set, std::vector<int> &sset, int num)
 {
-    int i[2];
-    if (set.size() > 2)
-    {
-        do
-        {
-            for (int n = 0; n < 2; n++)
-                i[n] = int(uniformRandom() * (set.size() - 1));
-        } while (!(i[1] != i[0]));
-        for (int n = 0; n < 2; n++)
-        {
-            sset.push_back(i[n]);
-        }
-    }
-    else
-    {
+    if (set.size() <= num)
         return false;
+
+    std::map<int, int> displaced;
+
+    sset.resize(num);
+
+    std::default_random_engine dre;
+    std::uniform_int_distribution<int> di(0, set.size() - 1);
+
+    for (int i = 0; i < num; ++i)
+    {
+        int idx = di(dre);
+        int v;
+        if (idx == i)
+            v = i;
+        else
+        {
+            auto it = displaced.find(idx);
+            if (it != displaced.end())
+            {
+                v = it->second;
+                it->second = i;
+            }
+            else
+            {
+                v = idx;
+                displaced[idx] = i;
+            }
+        }
+
+        sset[i] = v;
     }
+
     return true;
+
+    //int i[2];
+    //sset.resize(n);
+    //if (set.size() > 2)
+    //{
+    //    do
+    //    {
+    //        for (int n = 0; n < 2; n++)
+    //            i[n] = int(uniformRandom() * (set.size() - 1));
+    //    } while (!(i[1] != i[0]));
+    //    for (int n = 0; n < 2; n++)
+    //    {
+    //        sset.push_back(i[n]);
+    //    }
+    //}
+    //else
+    //{
+    //    return false;
+    //}
+    //return true;
 }
+#endif
 
 //The position of two random points in the line sample cannot be too close
 bool verifyComposition(const std::vector<cv::Point2d>& pts)
 {
-    cv::Point2d pt1 = pts[0];
-    cv::Point2d pt2 = pts[1];
-    if (abs(pt1.x - pt2.x) < 5 && abs(pt1.y - pt2.y) < 5)
-        return false;
+    //cv::Point2d pt1 = pts[0];
+    //cv::Point2d pt2 = pts[1];
+    //if (abs(pt1.x - pt2.x) < 5 && abs(pt1.y - pt2.y) < 5)
+    //    return false;
+
+    for (int i = 1; i < pts.size(); ++i)
+        for (int j = 0; j < i; ++j)
+        {
+            cv::Point2d pt1 = pts[j];
+            cv::Point2d pt2 = pts[i];
+            if (abs(pt1.x - pt2.x) < 5 && abs(pt1.y - pt2.y) < 5)
+                return false;
+        }
 
     return true;
 }
@@ -273,7 +360,8 @@ bool verifyComposition(const std::vector<cv::Point2d>& pts)
 
 //RANSAC straight line fitting
 void fitLineRANSAC(const std::vector<cv::Point2d>& ptSet, 
-    double &a, double &b, double &c, std::vector<bool> &inlierFlag)
+    //double &a, double &b, double &c, 
+    std::vector<bool> &inlierFlag)
 {
     //double residual_error = 2.99; // inner point threshold
     const double residual_error = 10; // inner point threshold
@@ -283,32 +371,65 @@ void fitLineRANSAC(const std::vector<cv::Point2d>& ptSet,
 
     //final inner point identifier and its residual
     inlierFlag = std::vector<bool>(ptSet.size(), false);
-    std::vector<double> resids_(ptSet.size(), 3);
+    std::vector<double> resids_;// (ptSet.size(), 3);
     int sample_count = 0;
     int N = 500;
 
-    double res = 0;
+    //double res = 0;
 
     // RANSAC
     srand((unsigned int)time(NULL)); //Set random number seed
     std::vector<int> ptsID;
     for (unsigned int i = 0; i < ptSet.size(); i++)
         ptsID.push_back(i);
+
+    enum { n_samples  = 8 };
+
+    std::vector<int> ptss(n_samples);
+
+    std::default_random_engine dre;
+
     while (N > sample_count && !stop_loop)
     {
+        cv::Mat res;
+
         std::vector<bool> inlierstemp;
         std::vector<double> residualstemp;
-        std::vector<int> ptss;
+        //std::vector<int> ptss;
         int inlier_count = 0;
-        if (!getSample(ptsID, ptss))
+
+        //random sampling - n_samples points
+        for (int j = 0; j < n_samples; ++j)
+            ptss[j] = j;
+
+        std::map<int, int> displaced;
+
+        // Fisher-Yates shuffle Algorithm
+        for (int j = 0; j < n_samples; ++j)
         {
-            stop_loop = true;
-            continue;
+            std::uniform_int_distribution<int> di(j, ptsID.size() - 1);
+            int idx = di(dre);
+
+            if (idx != j)
+            {
+                int& to_exchange = (idx < n_samples) ? ptss[idx] : displaced.try_emplace(idx, idx).first->second;
+                std::swap(ptss[j], to_exchange);
+            }
         }
 
+
+        //if (!getSample(ptsID, ptss, 3))
+        //{
+        //    stop_loop = true;
+        //    continue;
+        //}
+
         std::vector<cv::Point2d> pt_sam;
-        pt_sam.push_back(ptSet[ptss[0]]);
-        pt_sam.push_back(ptSet[ptss[1]]);
+        for (int i = 0; i < n_samples; ++i)
+            pt_sam.push_back(ptSet[ptss[i]]);
+
+        //pt_sam.push_back(ptSet[ptss[0]]);
+        //pt_sam.push_back(ptSet[ptss[1]]);
 
         if (!verifyComposition(pt_sam))
         {
@@ -317,12 +438,24 @@ void fitLineRANSAC(const std::vector<cv::Point2d>& ptSet,
         }
 
         // Calculate the line equation
-            calcLinePara(pt_sam, a, b, c, res);
+            //calcLinePara(pt_sam, a, b, c, res);
+        polynomial_curve_fit(pt_sam, n_samples - 1, res);
         //Inside point test
         for (unsigned int i = 0; i < ptSet.size(); i++)
         {
             cv::Point2d pt = ptSet[i];
-            double resid_ = fabs(pt.x * a + pt.y * b + c);
+            auto x = ptSet[i].x;
+            //double resid_ = fabs(pt.x * a + pt.y * b + c);
+
+            //double y = res.at<double>(0, 0) + res.at<double>(1, 0) * x +
+            //    res.at<double>(2, 0)*std::pow(x, 2) + res.at<double>(3, 0)*std::pow(x, 3);
+
+            double y = res.at<double>(0, 0) + res.at<double>(1, 0) * x;
+            for (int i = 2; i < n_samples; ++i)
+                y += res.at<double>(i, 0) * std::pow(x, i);
+
+            double resid_ = fabs(ptSet[i].y - y);
+
             residualstemp.push_back(resid_);
             inlierstemp.push_back(false);
             if (resid_ < residual_error)
@@ -361,7 +494,7 @@ void fitLineRANSAC(const std::vector<cv::Point2d>& ptSet,
             pset.push_back(ptSet[i]);
     }
 
-    calcLinePara(pset, a, b, c, res);
+    //calcLinePara(pset, a, b, c, res);
 }
 
 
@@ -529,7 +662,7 @@ int main(int argc, char *argv[])
                 }
             }
             //if (freq1 > 2 && freq1 >= ((freq2 * 3 / 5 - 1)) && freq1 <= ((freq2 * 3 / 5 + 1)))
-            if (freq2 >= freq1 * 5 / 3 && freq2 <= freq1 * 5 / 2)
+            if (freq2 > freq1 && freq2 >= freq1 * 5 / 3 && freq2 <= freq1 * 5 / 2)
             {
                 const auto coherency = imgCoherency.at<float>(y + WINDOW_DIMENSION / 2, x + WINDOW_DIMENSION / 2);
                 if (coherency > 0.5)
@@ -538,9 +671,10 @@ int main(int argc, char *argv[])
             }
         }
 
-    double A, B, C;
+    //double A, B, C;
     std::vector<bool> inliers;
-    fitLineRANSAC(ptSet, A, B, C, inliers);
+    fitLineRANSAC(ptSet, //A, B, C, 
+        inliers);
     for (unsigned int i = 0; i < ptSet.size(); ++i) {
         if (inliers[i])
             borderline.at<uchar>(ptSet[i].y, ptSet[i].x) = 255;
