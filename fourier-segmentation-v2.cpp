@@ -374,7 +374,7 @@ void fitLineRANSAC(const std::vector<cv::Point2d>& ptSet,
     inlierFlag = std::vector<bool>(ptSet.size(), false);
     std::vector<double> resids_;// (ptSet.size(), 3);
     int sample_count = 0;
-    int N = 500;
+    int N = 100000;
 
     //double res = 0;
 
@@ -516,7 +516,7 @@ double CalcPoly(const cv::Mat& X, double x)
 void fitLineRANSAC2(const std::vector<cv::Point2d>& vals, cv::Mat& a, int n_samples, std::vector<bool> &inlierFlag, double noise_sigma = 5.)
 {
     //int n_data = vals.size();
-    int N = 100;	//iterations 
+    int N = 100000;	//iterations 
     double T = 3 * noise_sigma;   // residual threshold
 
     //int n_sample = 3;
@@ -811,6 +811,7 @@ int main(int argc, char *argv[])
     fitLineRANSAC2(ptSet, A, n_samples, //A, B, C, 
         inliers);
 
+#if 0
     {
         std::vector<cv::Point2d> ptSet2;
         for (unsigned int i = 0; i < ptSet.size(); ++i) {
@@ -825,7 +826,7 @@ int main(int argc, char *argv[])
         std::swap(ptSet, ptSet2);
         std::swap(inliers, inliers2);
     }
-
+#endif
 
     for (unsigned int i = 0; i < ptSet.size(); ++i) {
         if (inliers[i])
