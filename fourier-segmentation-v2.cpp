@@ -361,6 +361,7 @@ bool verifyComposition(const std::vector<cv::Point2d>& pts)
 //RANSAC straight line fitting
 void fitLineRANSAC(const std::vector<cv::Point2d>& ptSet, 
     //double &a, double &b, double &c, 
+    cv::Mat& a, int n_samples,
     std::vector<bool> &inlierFlag)
 {
     //double residual_error = 2.99; // inner point threshold
@@ -383,7 +384,7 @@ void fitLineRANSAC(const std::vector<cv::Point2d>& ptSet,
     for (unsigned int i = 0; i < ptSet.size(); i++)
         ptsID.push_back(i);
 
-    enum { n_samples  = 8 };
+    //enum { n_samples  = 8 };
 
     std::vector<int> ptss(n_samples);
 
@@ -495,9 +496,140 @@ void fitLineRANSAC(const std::vector<cv::Point2d>& ptSet,
     }
 
     //calcLinePara(pset, a, b, c, res);
+    polynomial_curve_fit(pset, n_samples - 1, a);
 }
 
+//////////////////////////////////////////////////////////////////////////////
 
+double CalcPoly(const cv::Mat& X, double x)
+{
+    double result = X.at<double>(0, 0);
+    double v = 1.;
+    for (int i = 1; i < X.rows; ++i)
+    {
+        v *= x;
+        result += X.at<double>(i, 0) * v;
+    }
+    return result;
+}
+
+void fitLineRANSAC2(const std::vector<cv::Point2d>& vals, cv::Mat& a, int n_samples, std::vector<bool> &inlierFlag, double noise_sigma = 5.)
+{
+    //int n_data = vals.size();
+    int N = 100;	//iterations 
+    double T = 3 * noise_sigma;   // residual threshold
+
+    //int n_sample = 3;
+    int max_cnt = 0;
+    cv::Mat best_model(n_samples, 1, CV_64FC1);
+
+    std::default_random_engine dre;
+
+    std::vector<int> k(n_samples);
+
+    for (int n = 0; n < N; n++)
+    {
+        //random sampling - n_samples points
+        for (int j = 0; j < n_samples; ++j)
+            k[j] = j;
+
+        std::map<int, int> displaced;
+
+        // Fisher-Yates shuffle Algorithm
+        for (int j = 0; j < n_samples; ++j)
+        {
+            std::uniform_int_distribution<int> di(j, vals.size() - 1);
+            int idx = di(dre);
+
+            if (idx != j)
+            {
+                int& to_exchange = (idx < n_samples) ? k[idx] : displaced.try_emplace(idx, idx).first->second;
+                std::swap(k[j], to_exchange);
+            }
+        }
+
+        //printf("random sample : %d %d %d\n", k[0], k[1], k[2]);
+
+        //model estimation
+        cv::Mat AA(n_samples, n_samples, CV_64FC1);
+        cv::Mat BB(n_samples, 1, CV_64FC1);
+        for (int i = 0; i < n_samples; i++)
+        {
+            AA.at<double>(i, 0) = 1.;
+            double v = 1.;
+            for (int j = 1; j < n_samples; ++j)
+            {
+                v *= vals[k[i]].x;
+                AA.at<double>(i, j) = v;
+            }
+
+            BB.at<double>(i, 0) = vals[k[i]].y;
+        }
+
+        cv::Mat AA_pinv(n_samples, n_samples, CV_64FC1);
+        invert(AA, AA_pinv, cv::DECOMP_SVD);
+
+        cv::Mat X = AA_pinv * BB;
+
+        //evaluation 
+        int cnt = 0;
+        for (const auto& v : vals)
+        {
+            double data = std::abs(v.y - CalcPoly(X, v.x));
+
+            if (data < T)
+            {
+                cnt++;
+            }
+        }
+
+        if (cnt > max_cnt)
+        {
+            best_model = X;
+            max_cnt = cnt;
+        }
+    }
+
+    //------------------------------------------------------------------- optional LS fitting 
+    inlierFlag = std::vector<bool>(vals.size(), false);
+    std::vector<int> vec_index;
+    for (int i = 0; i < vals.size(); i++)
+    {
+        const auto& v = vals[i];
+        double data = std::abs(v.y - CalcPoly(best_model, v.x));
+        if (data < T)
+        {
+            inlierFlag[i] = true;
+            vec_index.push_back(i);
+        }
+    }
+
+    cv::Mat A2(vec_index.size(), n_samples, CV_64FC1);
+    cv::Mat B2(vec_index.size(), 1, CV_64FC1);
+
+    for (int i = 0; i < vec_index.size(); i++)
+    {
+        A2.at<double>(i, 0) = 1.;
+        double v = 1.;
+        for (int j = 1; j < n_samples; ++j)
+        {
+            v *= vals[vec_index[i]].x;
+            A2.at<double>(i, j) = v;
+        }
+
+
+        B2.at<double>(i, 0) = vals[vec_index[i]].y;
+    }
+
+    cv::Mat A2_pinv(n_samples, vec_index.size(), CV_64FC1);
+    invert(A2, A2_pinv, cv::DECOMP_SVD);
+
+    a = A2_pinv * B2;
+
+    //return X;
+}
+
+//////////////////////////////////////////////////////////////////////////////
 
 int main(int argc, char *argv[])
 {
@@ -672,15 +804,52 @@ int main(int argc, char *argv[])
         }
 
     //double A, B, C;
+
+    enum { n_samples  = 8 };
+    cv::Mat A;
     std::vector<bool> inliers;
-    fitLineRANSAC(ptSet, //A, B, C, 
+    fitLineRANSAC2(ptSet, A, n_samples, //A, B, C, 
         inliers);
+
+    {
+        std::vector<cv::Point2d> ptSet2;
+        for (unsigned int i = 0; i < ptSet.size(); ++i) {
+            if (inliers[i])
+                ptSet2.push_back(ptSet[i]);
+        }
+
+        std::vector<bool> inliers2;
+        fitLineRANSAC2(ptSet2, A, n_samples, //A, B, C, 
+            inliers2);
+
+        std::swap(ptSet, ptSet2);
+        std::swap(inliers, inliers2);
+    }
+
+
     for (unsigned int i = 0; i < ptSet.size(); ++i) {
         if (inliers[i])
             borderline.at<uchar>(ptSet[i].y, ptSet[i].x) = 255;
     }
 
     cv::imshow("borderline", borderline);
+
+    std::vector<cv::Point> points_fitted;
+    for (int x = 0; x < visualizationCols; x++)
+    {
+        //double y = A.at<double>(0, 0) + A.at<double>(1, 0) * x +
+        //    A.at<double>(2, 0)*std::pow(x, 2) + A.at<double>(3, 0)*std::pow(x, 3);
+
+        double y = A.at<double>(0, 0) + A.at<double>(1, 0) * x;
+        for (int i = 2; i < n_samples; ++i)
+            y += A.at<double>(i, 0) * std::pow(x, i);
+
+        points_fitted.push_back(cv::Point(x + WINDOW_DIMENSION / 2, y + WINDOW_DIMENSION / 2));
+    }
+
+    cv::polylines(func, points_fitted, false, cv::Scalar(0, 255, 255), 1, 8, 0);
+    cv::imshow("image", func);
+
 
     //imgCoherency *= 10;
     //cv::exp(imgCoherency, imgCoherency);
