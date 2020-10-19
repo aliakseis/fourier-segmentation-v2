@@ -520,7 +520,11 @@ void fitLineRANSAC2(const std::vector<cv::Point2d>& vals, cv::Mat& a, int n_samp
     double T = 3 * noise_sigma;   // residual threshold
 
     //int n_sample = 3;
-    int max_cnt = 0;
+
+    //int max_cnt = 0;
+
+    double max_weight = 0.;
+
     cv::Mat best_model(n_samples, 1, CV_64FC1);
 
     std::default_random_engine dre;
@@ -572,21 +576,25 @@ void fitLineRANSAC2(const std::vector<cv::Point2d>& vals, cv::Mat& a, int n_samp
         cv::Mat X = AA_pinv * BB;
 
         //evaluation 
-        int cnt = 0;
+        //int cnt = 0;
+        double weight = 0.;
         for (const auto& v : vals)
         {
             double data = std::abs(v.y - CalcPoly(X, v.x));
 
-            if (data < T)
-            {
-                cnt++;
-            }
+            weight += exp(-data * data / (2 * noise_sigma * noise_sigma));
+
+            //if (data < T)
+            //{
+            //    cnt++;
+            //}
         }
 
-        if (cnt > max_cnt)
+        //if (cnt > max_cnt)
+        if (weight > max_weight)
         {
             best_model = X;
-            max_cnt = cnt;
+            max_weight = weight;
         }
     }
 
