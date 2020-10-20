@@ -359,7 +359,7 @@ bool verifyComposition(const std::vector<cv::Point2d>& pts)
 
 
 //RANSAC straight line fitting
-void fitLineRANSAC(const std::vector<cv::Point2d>& ptSet, 
+void fitLineRANSAC(const std::vector<cv::Point>& ptSet, 
     //double &a, double &b, double &c, 
     cv::Mat& a, int n_samples,
     std::vector<bool> &inlierFlag)
@@ -513,7 +513,7 @@ double CalcPoly(const cv::Mat& X, double x)
     return result;
 }
 
-void fitLineRANSAC2(const std::vector<cv::Point2d>& vals, cv::Mat& a, int n_samples, std::vector<bool> &inlierFlag, double noise_sigma = 5.)
+void fitLineRANSAC2(const std::vector<cv::Point>& vals, cv::Mat& a, int n_samples, std::vector<bool> &inlierFlag, double noise_sigma = 2.)
 {
     //int n_data = vals.size();
     int N = 100000;	//iterations 
@@ -577,12 +577,19 @@ void fitLineRANSAC2(const std::vector<cv::Point2d>& vals, cv::Mat& a, int n_samp
 
         //evaluation 
         //int cnt = 0;
+        std::map<int, double> bestValues;
         double weight = 0.;
         for (const auto& v : vals)
         {
-            double data = std::abs(v.y - CalcPoly(X, v.x));
+            const double arg = std::abs(v.y - CalcPoly(X, v.x));
+            const double data = exp(-arg * arg / (2 * noise_sigma * noise_sigma));
 
-            weight += exp(-data * data / (2 * noise_sigma * noise_sigma));
+            auto& val = bestValues[v.x];
+            if (data > val)
+            {
+                weight += data - val;
+                val = data;
+            }
 
             //if (data < T)
             //{
@@ -768,11 +775,13 @@ int main(int argc, char *argv[])
 
     cv::imshow("vertical", vertical);
 
+    cv::Mat borderline0(visualizationRows, visualizationCols, CV_8UC1, cv::Scalar(0));
     cv::Mat borderline(visualizationRows, visualizationCols, CV_8UC1, cv::Scalar(0));
 
     // border line
-    std::vector<cv::Point2d> ptSet;
+    std::vector<cv::Point> ptSet;
 
+    std::vector<int> lastTransitions(visualizationCols, INT_MIN / 2);
 
     for (int y = 0; y < visualizationRows - 1; ++y)
         for (int x = 0; x < visualizationCols; ++x)
@@ -805,9 +814,11 @@ int main(int argc, char *argv[])
             if (freq2 > freq1 && freq2 >= freq1 * 5 / 3 && freq2 <= freq1 * 5 / 2)
             {
                 const auto coherency = imgCoherency.at<float>(y + WINDOW_DIMENSION / 2, x + WINDOW_DIMENSION / 2);
-                if (coherency > 0.5)
-                    //borderline.at<uchar>(y, x) = 255;
-                    ptSet.push_back(cv::Point2d(x, y));
+                if (coherency > 0.2 && y - lastTransitions[x] > 100) {
+                    lastTransitions[x] = y;
+                    borderline0.at<uchar>(y, x) = 255;
+                    ptSet.push_back({ x, y });
+                }
             }
         }
 
@@ -840,6 +851,8 @@ int main(int argc, char *argv[])
         if (inliers[i])
             borderline.at<uchar>(ptSet[i].y, ptSet[i].x) = 255;
     }
+
+    cv::imshow("borderline0", borderline0);
 
     cv::imshow("borderline", borderline);
 
