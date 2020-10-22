@@ -208,6 +208,8 @@ void CallBackFunc(int event, int x, int y, int flags, void* userdata)
 
 //////////////////////////////////////////////////////////////////////////////
 
+const double POLY_COEFF = 0.001;
+
 bool polynomial_curve_fit(const std::vector<cv::Point2d>& key_point, int n, cv::Mat& A)
 {
     //Number of key points
@@ -513,10 +515,10 @@ double CalcPoly(const cv::Mat& X, double x)
     return result;
 }
 
-void fitLineRANSAC2(const std::vector<cv::Point>& vals, cv::Mat& a, int n_samples, std::vector<bool> &inlierFlag, double noise_sigma = 2.)
+void fitLineRANSAC2(const std::vector<cv::Point>& vals, cv::Mat& a, int n_samples, std::vector<bool> &inlierFlag, double noise_sigma = 5.)
 {
     //int n_data = vals.size();
-    int N = 100000;	//iterations 
+    int N = 1000;	//iterations 
     double T = 3 * noise_sigma;   // residual threshold
 
     //int n_sample = 3;
@@ -563,7 +565,7 @@ void fitLineRANSAC2(const std::vector<cv::Point>& vals, cv::Mat& a, int n_sample
             double v = 1.;
             for (int j = 1; j < n_samples; ++j)
             {
-                v *= vals[k[i]].x;
+                v *= vals[k[i]].x * POLY_COEFF;
                 AA.at<double>(i, j) = v;
             }
 
@@ -581,7 +583,7 @@ void fitLineRANSAC2(const std::vector<cv::Point>& vals, cv::Mat& a, int n_sample
         double weight = 0.;
         for (const auto& v : vals)
         {
-            const double arg = std::abs(v.y - CalcPoly(X, v.x));
+            const double arg = std::abs(v.y - CalcPoly(X, v.x * POLY_COEFF));
             const double data = exp(-arg * arg / (2 * noise_sigma * noise_sigma));
 
             auto& val = bestValues[v.x];
@@ -611,7 +613,7 @@ void fitLineRANSAC2(const std::vector<cv::Point>& vals, cv::Mat& a, int n_sample
     for (int i = 0; i < vals.size(); i++)
     {
         const auto& v = vals[i];
-        double data = std::abs(v.y - CalcPoly(best_model, v.x));
+        double data = std::abs(v.y - CalcPoly(best_model, v.x * POLY_COEFF));
         if (data < T)
         {
             inlierFlag[i] = true;
@@ -628,7 +630,7 @@ void fitLineRANSAC2(const std::vector<cv::Point>& vals, cv::Mat& a, int n_sample
         double v = 1.;
         for (int j = 1; j < n_samples; ++j)
         {
-            v *= vals[vec_index[i]].x;
+            v *= vals[vec_index[i]].x * POLY_COEFF;
             A2.at<double>(i, j) = v;
         }
 
@@ -862,9 +864,9 @@ int main(int argc, char *argv[])
         //double y = A.at<double>(0, 0) + A.at<double>(1, 0) * x +
         //    A.at<double>(2, 0)*std::pow(x, 2) + A.at<double>(3, 0)*std::pow(x, 3);
 
-        double y = A.at<double>(0, 0) + A.at<double>(1, 0) * x;
+        double y = A.at<double>(0, 0) + A.at<double>(1, 0) * x * POLY_COEFF;
         for (int i = 2; i < n_samples; ++i)
-            y += A.at<double>(i, 0) * std::pow(x, i);
+            y += A.at<double>(i, 0) * std::pow(x * POLY_COEFF, i);
 
         points_fitted.push_back(cv::Point(x + WINDOW_DIMENSION / 2, y + WINDOW_DIMENSION / 2));
     }
