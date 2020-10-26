@@ -12,6 +12,8 @@
 
 #include <opencv2/plot.hpp>
 
+#include <ceres/ceres.h>
+
 #include <iostream>
 #include <map>
 
@@ -648,6 +650,56 @@ void fitLineRANSAC2(const std::vector<cv::Point>& vals, cv::Mat& a, int n_sample
 
 //////////////////////////////////////////////////////////////////////////////
 
+struct PolynomialResidual
+{
+    PolynomialResidual(double x, double y, int n_samples)
+        : x_(x), y_(y), n_samples_(n_samples) {}
+
+    template <typename T>
+    bool operator()(T const* const* relative_poses, T* residuals) const {
+
+        T y = *(relative_poses[0]) + *(relative_poses[1]) * x_;
+        for (int i = 2; i < n_samples_; ++i)
+            y += *(relative_poses[i]) * std::pow(x_, i);
+
+        residuals[0] = T(y_) - y;
+        return true;
+    }
+
+private:
+    // Observations for a sample.
+    const double x_;
+    const double y_;
+    int n_samples_;
+};
+
+/*
+struct CrappyResidual {
+    CrappyResidual(double x, double y)
+        : x_(x), y_(y) {}
+
+    template <typename T>
+    bool operator()(const T* const m0, const T* const m1, const T* const m2, const T* const m3, const T* const m4, const T* const m5, const T* const m6, const T* const m7, T* residual) const {
+        const double relative_poses[] { static_cast<double>(m0[0]), static_cast<double>(m1[0]), static_cast<double>(m2[0]), static_cast<double>(m3[0]), 
+            static_cast<double>(m4[0]), static_cast<double>(m5[0]), static_cast<double>(m6[0]), static_cast<double>(m7[0]) };
+        double y = relative_poses[0] + relative_poses[1] * x_;
+        for (int i = 2; i < 8; ++i)
+            y += relative_poses[i] * std::pow(x_, i);
+
+        residual[0] = T(y_) - y;
+
+        return true;
+    }
+
+private:
+    // Observations for a sample.
+    const double x_;
+    const double y_;
+};
+*/
+
+//////////////////////////////////////////////////////////////////////////////
+
 int main(int argc, char *argv[])
 {
     /*Read Image*/
@@ -827,10 +879,71 @@ int main(int argc, char *argv[])
     //double A, B, C;
 
     enum { n_samples  = 8 };
+    //*
     cv::Mat A;
     std::vector<bool> inliers;
     fitLineRANSAC2(ptSet, A, n_samples, //A, B, C, 
         inliers);
+    //*/
+
+    //*
+    //cv::Mat A(n_samples, 1, CV_64FC1, 0.);
+    std::vector<double*> params;
+    for (int i = 0; i < n_samples; ++i)
+        params.push_back(&A.at<double>(i, 0));
+
+    ceres::Problem problem;
+    for (int i = 0; i < ptSet.size(); ++i)
+    {
+        auto cost_function
+            = new ceres::DynamicAutoDiffCostFunction<PolynomialResidual>(
+                new PolynomialResidual(ptSet[i].x * POLY_COEFF, ptSet[i].y, n_samples));
+
+        //cost_function->AddParameterBlock(params.size());
+        for (int j = 0; j < params.size(); ++j)
+            cost_function->AddParameterBlock(1);
+
+        cost_function->SetNumResiduals(1);
+
+        problem.AddResidualBlock(cost_function, 
+            new ceres::CauchyLoss(10.), 
+            params);
+    }
+
+    ceres::Solver::Options options;
+    options.linear_solver_type = ceres::DENSE_QR;
+    options.minimizer_progress_to_stdout = true;
+
+    options.max_num_iterations = 1000;
+
+    ceres::Solver::Summary summary;
+    Solve(options, &problem, &summary);
+    std::cout << summary.BriefReport() << "\n";
+    //*/
+
+
+    /*
+    //cv::Mat A(n_samples, 1, CV_64FC1, 0.);
+
+    ceres::Problem problem;
+    for (int i = 0; i < ptSet.size(); ++i)
+    {
+        auto cost_function
+            = new ceres::AutoDiffCostFunction<CrappyResidual, 8, 1, 1, 1, 1, 1, 1, 1, 1>(
+                new CrappyResidual(ptSet[i].x * POLY_COEFF, ptSet[i].y));
+
+        problem.AddResidualBlock(cost_function, new ceres::CauchyLoss(5.), 
+            &A.at<double>(0, 0), &A.at<double>(1, 0), &A.at<double>(2, 0), &A.at<double>(3, 0), &A.at<double>(4, 0), &A.at<double>(5, 0), &A.at<double>(6, 0), &A.at<double>(7, 0));
+    }
+
+    ceres::Solver::Options options;
+    options.linear_solver_type = ceres::DENSE_QR;
+    options.minimizer_progress_to_stdout = true;
+    ceres::Solver::Summary summary;
+    Solve(options, &problem, &summary);
+    std::cout << summary.BriefReport() << "\n";
+    //*/
+
 
 #if 0
     {
@@ -849,14 +962,17 @@ int main(int argc, char *argv[])
     }
 #endif
 
+    /*
+    cv::Mat borderline(visualizationRows, visualizationCols, CV_8UC1, cv::Scalar(0));
     for (unsigned int i = 0; i < ptSet.size(); ++i) {
         if (inliers[i])
             borderline.at<uchar>(ptSet[i].y, ptSet[i].x) = 255;
     }
+    cv::imshow("borderline", borderline);
+    */
 
     cv::imshow("borderline0", borderline0);
 
-    cv::imshow("borderline", borderline);
 
     std::vector<cv::Point> points_fitted;
     for (int x = 0; x < visualizationCols; x++)
