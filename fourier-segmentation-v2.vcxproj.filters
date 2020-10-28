@@ -23,5 +23,8 @@
     <ClInclude Include="tswdft2d.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="nanoflann.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

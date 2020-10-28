@@ -14,10 +14,13 @@
 
 #include <ceres/ceres.h>
 
+#include "nanoflann.hpp"
+
 #include <iostream>
 #include <map>
 
 #include <random>
+
 
 void calcGST(const cv::Mat& inputImg, cv::Mat& imgCoherencyOut, cv::Mat& imgOrientationOut, int w = 52)
 {
@@ -700,6 +703,47 @@ private:
 
 //////////////////////////////////////////////////////////////////////////////
 
+class PointsProvider
+{
+public:
+    PointsProvider(const std::vector<cv::Point>& ptSet)
+        : ptSet_(ptSet)
+    {}
+
+    size_t kdtree_get_point_count() const
+    {
+        return ptSet_.size();
+    }
+
+    // Returns the dim'th component of the idx'th point in the class:
+    // Since this is inlined and the "dim" argument is typically an immediate value, the
+    //  "if/else's" are actually solved at compile time.
+    float kdtree_get_pt(const size_t idx, const size_t dim) const
+    {
+        auto& v = ptSet_[idx];
+        return dim? v.y : v.x;
+    }
+
+    // Optional bounding-box computation: return false to default to a standard bbox computation loop.
+    //   Return true if the BBOX was already computed by the class and returned in "bb" so it can be avoided to redo it again.
+    //   Look at bb.size() to find out the expected dimensionality (e.g. 2 or 3 for point clouds)
+    template <class BBOX>
+    bool kdtree_get_bbox(BBOX& /* bb */) const { return false; }
+
+
+private:
+    const std::vector<cv::Point>& ptSet_;
+};
+
+// construct a kd-tree index:
+typedef nanoflann::KDTreeSingleIndexAdaptor<
+    nanoflann::L2_Simple_Adaptor<float, PointsProvider >,
+    PointsProvider,
+    2 /* dim */
+> my_kd_tree_t;
+
+//////////////////////////////////////////////////////////////////////////////
+
 int main(int argc, char *argv[])
 {
     /*Read Image*/
@@ -877,7 +921,7 @@ int main(int argc, char *argv[])
 
                 if (coherency > 0.2 && orientationOk && y - lastTransitions[x] > 100) {
                     lastTransitions[x] = y;
-                    borderline0.at<uchar>(y, x) = 255;
+                    //borderline0.at<uchar>(y, x) = 255;
                     ptSet.push_back({ x, y });
                 }
             }
@@ -897,6 +941,68 @@ int main(int argc, char *argv[])
     {
         v.y -= 2;
     }
+
+    // filtering
+#if 1
+    {
+        PointsProvider provider(ptSet);
+
+        my_kd_tree_t infos(2, provider);
+
+        infos.buildIndex();
+
+        const int k = 4;
+
+        std::vector<size_t> index(k);
+        std::vector<float> dist(k);
+
+        std::vector <bool> goodOnes(ptSet.size());
+
+        for (int i = 0; i < ptSet.size(); ++i)
+        {
+
+            float pos[2];
+
+            pos[0] = ptSet[i].x;
+            pos[1] = ptSet[i].y;
+
+            infos.knnSearch(&pos[0], k, &index[0], &dist[0]);
+
+            goodOnes[i] = dist[k-1] < 15 * 15;
+        }
+
+        for (int i = ptSet.size(); --i >= 0;)
+        {
+            if (!goodOnes[i])
+                ptSet.erase(ptSet.begin() + i);
+        }
+    }
+#endif
+
+    {
+        // partition via our partitioning function
+        std::vector<int> labels;
+        int equilavenceClassesCount = cv::partition(ptSet, labels,
+            [](const cv::Point& p1, const cv::Point& p2) {
+            return hypot(p2.x - p1.x, p2.y - p1.y) < 25;
+            });
+
+        std::vector<int> groupCounts(equilavenceClassesCount);
+
+        for (auto& l : labels)
+            ++groupCounts[l];
+
+        auto maxIdx = std::max_element(groupCounts.begin(), groupCounts.end()) - groupCounts.begin();
+
+        for (int i = ptSet.size(); --i >= 0;)
+        {
+            if (labels[i] != maxIdx)
+                ptSet.erase(ptSet.begin() + i);
+        }
+    }
+
+    for (auto& v : ptSet)
+        borderline0.at<uchar>(v.y, v.x) = 255;
 
 
     cv::Mat poly;

@@ -158,6 +158,7 @@
     <ClCompile Include="fourier-segmentation-v2.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="nanoflann.hpp" />
     <ClInclude Include="tswdft2d.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
