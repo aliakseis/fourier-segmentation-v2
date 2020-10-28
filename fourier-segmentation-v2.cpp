@@ -520,7 +520,7 @@ double CalcPoly(const cv::Mat& X, double x)
 void fitLineRANSAC2(const std::vector<cv::Point>& vals, cv::Mat& a, int n_samples, std::vector<bool> &inlierFlag, double noise_sigma = 5.)
 {
     //int n_data = vals.size();
-    int N = 1000;	//iterations 
+    int N = 5000;	//iterations 
     double T = 3 * noise_sigma;   // residual threshold
 
     //int n_sample = 3;
@@ -832,6 +832,10 @@ int main(int argc, char *argv[])
     cv::Mat borderline0(visualizationRows, visualizationCols, CV_8UC1, cv::Scalar(0));
     cv::Mat borderline(visualizationRows, visualizationCols, CV_8UC1, cv::Scalar(0));
 
+    cv::Mat imgOrientationBin;
+    inRange(imgOrientation, cv::Scalar(CV_PI / 2 - 0.2), cv::Scalar(CV_PI / 2 + 0.2), imgOrientationBin);
+
+
     // border line
     std::vector<cv::Point> ptSet;
 
@@ -868,7 +872,10 @@ int main(int argc, char *argv[])
             if (freq2 > freq1 && freq2 >= freq1 * 5 / 3 && freq2 <= freq1 * 5 / 2)
             {
                 const auto coherency = imgCoherency.at<float>(y + WINDOW_DIMENSION / 2, x + WINDOW_DIMENSION / 2);
-                if (coherency > 0.2 && y - lastTransitions[x] > 100) {
+
+                const auto orientationOk = imgOrientationBin.at<uchar>(y + WINDOW_DIMENSION / 2, x + WINDOW_DIMENSION / 2);
+
+                if (coherency > 0.2 && orientationOk && y - lastTransitions[x] > 100) {
                     lastTransitions[x] = y;
                     borderline0.at<uchar>(y, x) = 255;
                     ptSet.push_back({ x, y });
@@ -878,50 +885,89 @@ int main(int argc, char *argv[])
 
     //double A, B, C;
 
-    enum { n_samples  = 8 };
-    //*
-    cv::Mat A;
-    std::vector<bool> inliers;
-    fitLineRANSAC2(ptSet, A, n_samples, //A, B, C, 
-        inliers);
-    //*/
+    //cv::Mat filtimg;
+    //cv::boxFilter(borderline0, filtimg, -1, cv::Size(100, 100));// , cv::Point(0, 0), false);
+    //cv::Point min_loc, max_loc; 
+    //double min, max;
+    //cv::minMaxLoc(filtimg, &min, &max, &min_loc, &max_loc);
+    //cv::rectangle(borderline0, cv::Rect(max_loc.x, max_loc.y, 100, 100), cv::Scalar(255));
 
-    //*
-    //cv::Mat A(n_samples, 1, CV_64FC1, 0.);
-    std::vector<double*> params;
-    for (int i = 0; i < n_samples; ++i)
-        params.push_back(&A.at<double>(i, 0));
 
-    ceres::Problem problem;
-    for (int i = 0; i < ptSet.size(); ++i)
+    for (auto& v : ptSet)
     {
-        auto cost_function
-            = new ceres::DynamicAutoDiffCostFunction<PolynomialResidual>(
-                new PolynomialResidual(ptSet[i].x * POLY_COEFF, ptSet[i].y, n_samples));
-
-        //cost_function->AddParameterBlock(params.size());
-        for (int j = 0; j < params.size(); ++j)
-            cost_function->AddParameterBlock(1);
-
-        cost_function->SetNumResiduals(1);
-
-        problem.AddResidualBlock(cost_function, 
-            new ceres::CauchyLoss(10.), 
-            params);
+        v.y -= 2;
     }
 
-    ceres::Solver::Options options;
-    options.linear_solver_type = ceres::DENSE_QR;
-    options.minimizer_progress_to_stdout = true;
 
-    options.max_num_iterations = 1000;
+    cv::Mat poly;
 
-    ceres::Solver::Summary summary;
-    Solve(options, &problem, &summary);
-    std::cout << summary.BriefReport() << "\n";
-    //*/
+    enum { n_samples = 8 };
+
+    double bestCost = 1.e38;
+
+    for (int n_ransac_samples = 1; n_ransac_samples <= n_samples; ++n_ransac_samples)
+    {
+
+        //*
+        cv::Mat A;
+        std::vector<bool> inliers;
+        fitLineRANSAC2(ptSet, A, n_ransac_samples, //A, B, C, 
+            inliers);
+        //*/
 
 
+        for (int i = 0; i < n_samples - n_ransac_samples; ++i)
+            A.push_back(0.);
+
+        //*
+        //cv::Mat A(n_samples, 1, CV_64FC1, 0.);
+        std::vector<double*> params;
+        for (int i = 0; i < n_samples; ++i)
+            params.push_back(&A.at<double>(i, 0));
+
+        ceres::Problem problem;
+        for (int i = 0; i < ptSet.size(); ++i)
+        {
+            auto cost_function
+                = new ceres::DynamicAutoDiffCostFunction<PolynomialResidual>(
+                    new PolynomialResidual(ptSet[i].x * POLY_COEFF, ptSet[i].y, n_samples));
+
+            //cost_function->AddParameterBlock(params.size());
+            for (int j = 0; j < params.size(); ++j)
+                cost_function->AddParameterBlock(1);
+
+            cost_function->SetNumResiduals(1);
+
+            problem.AddResidualBlock(cost_function,
+                new ceres::ArctanLoss(5.),
+                params);
+        }
+
+        ceres::Solver::Options options;
+        options.linear_solver_type = ceres::DENSE_QR;
+        options.minimizer_progress_to_stdout = true;
+
+        options.max_num_iterations = 1000;
+
+        //options.max_linear_solver_iterations = 1000;
+        //options.min_linear_solver_iterations = 950;
+
+        ceres::Solver::Summary summary;
+        Solve(options, &problem, &summary);
+
+        if (summary.final_cost < bestCost)
+        {
+            bestCost = summary.final_cost;
+            poly = A;
+        }
+
+        //std::cout << summary.BriefReport() << "\n";
+        //*/
+
+        //for (int i = 0; i < n_samples; ++i)
+        //    std::cout << A.at<double>(i, 0) << '\n';
+
+    }
     /*
     //cv::Mat A(n_samples, 1, CV_64FC1, 0.);
 
@@ -980,15 +1026,32 @@ int main(int argc, char *argv[])
         //double y = A.at<double>(0, 0) + A.at<double>(1, 0) * x +
         //    A.at<double>(2, 0)*std::pow(x, 2) + A.at<double>(3, 0)*std::pow(x, 3);
 
-        double y = A.at<double>(0, 0) + A.at<double>(1, 0) * x * POLY_COEFF;
+        double y = poly.at<double>(0, 0) + poly.at<double>(1, 0) * x * POLY_COEFF;
         for (int i = 2; i < n_samples; ++i)
-            y += A.at<double>(i, 0) * std::pow(x * POLY_COEFF, i);
+            y += poly.at<double>(i, 0) * std::pow(x * POLY_COEFF, i);
 
         points_fitted.push_back(cv::Point(x + WINDOW_DIMENSION / 2, y + WINDOW_DIMENSION / 2));
     }
 
     cv::polylines(func, points_fitted, false, cv::Scalar(0, 255, 255), 1, 8, 0);
     cv::imshow("image", func);
+
+    cv::Mat theMask(IMAGE_DIMENSION, IMAGE_DIMENSION, CV_8UC1, cv::Scalar(0));
+
+    std::vector<std::vector<cv::Point> > fillContAll;
+    fillContAll.push_back(points_fitted);
+
+    fillContAll[0].push_back(cv::Point(IMAGE_DIMENSION - WINDOW_DIMENSION / 2, 0));
+    fillContAll[0].push_back(cv::Point(WINDOW_DIMENSION / 2, 0));
+
+    cv::fillPoly(theMask, fillContAll, cv::Scalar(255));
+
+    cv::imshow("theMask", theMask);
+
+    cv::Mat imgCoherencyBin = imgCoherency > 0.2;
+
+    cv::imshow("imgCoherencyBin", imgCoherencyBin);
+    cv::imshow("imgOrientationBin", imgOrientationBin);
 
 
     //imgCoherency *= 10;
