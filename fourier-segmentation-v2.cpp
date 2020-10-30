@@ -1,6 +1,8 @@
 // fourier-segmentation-v2.cpp : This file contains the 'main' function. Program execution begins and ends there.
 //
 
+#include "known-good.h"
+
 #include "tswdft2d.h"
 
 
@@ -11,6 +13,8 @@
 #include <opencv2/photo.hpp>
 
 #include <opencv2/plot.hpp>
+
+#include "opencv2/xfeatures2d.hpp"
 
 #include <ceres/ceres.h>
 
@@ -71,13 +75,14 @@ void calcGST(const cv::Mat& inputImg, cv::Mat& imgCoherencyOut, cv::Mat& imgOrie
 }
 
 
-//const int IMAGE_DIMENSION = 800;
-const int IMAGE_DIMENSION = 512;
+const int IMAGE_DIMENSION = 800;
+//const int IMAGE_DIMENSION = 512;
 
-enum { WINDOW_DIMENSION = 32 };
+enum { WINDOW_DIMENSION_X = 64 };
+enum { WINDOW_DIMENSION_Y = 1 };
 
-const auto visualizationRows = IMAGE_DIMENSION - WINDOW_DIMENSION + 1;
-const auto visualizationCols = IMAGE_DIMENSION - WINDOW_DIMENSION + 1;
+const auto visualizationRows = IMAGE_DIMENSION - WINDOW_DIMENSION_Y + 1;
+const auto visualizationCols = IMAGE_DIMENSION - WINDOW_DIMENSION_X + 1;
 
 
 void DemoShow(const cv::Mat& src, const char* caption)
@@ -93,25 +98,28 @@ void CallBackFunc(int event, int x, int y, int flags, void* userdata)
 
     const auto& transformed = *static_cast<std::vector<std::complex<float>>*>(userdata);
 
-    enum { HALF_SIZE = WINDOW_DIMENSION / 2 };
+    //enum { WINDOW_DIMENSION = 32 };
+
+    enum { HALF_SIZE_X = WINDOW_DIMENSION_X / 2 };
+    enum { HALF_SIZE_Y = WINDOW_DIMENSION_Y / 2 };
 
     if (event == cv::EVENT_MOUSEMOVE)
     {
-        const auto xx = std::min(std::max(x - HALF_SIZE, 0), IMAGE_DIMENSION - WINDOW_DIMENSION);
-        const auto yy = std::min(std::max(y - HALF_SIZE, 0), IMAGE_DIMENSION - WINDOW_DIMENSION);
+        const auto xx = std::min(std::max(x - HALF_SIZE_X, 0), IMAGE_DIMENSION - WINDOW_DIMENSION_X);
+        const auto yy = std::min(std::max(y - HALF_SIZE_Y, 0), IMAGE_DIMENSION - WINDOW_DIMENSION_Y);
 
         const auto sourceOffset = yy * visualizationCols + xx;
 
 
         std::map<float, float> ordered;
 
-        for (int j = 1; j < WINDOW_DIMENSION/* * WINDOW_DIMENSION*/; ++j)
+        for (int j = 1; j < WINDOW_DIMENSION_X/* * WINDOW_DIMENSION*/; ++j)
         {
-            if (j / WINDOW_DIMENSION > WINDOW_DIMENSION / 2 || j % WINDOW_DIMENSION > WINDOW_DIMENSION / 2)
+            if (j / WINDOW_DIMENSION_X > WINDOW_DIMENSION_Y / 2 || j % WINDOW_DIMENSION_X > WINDOW_DIMENSION_X / 2)
                 continue;
 
-            const auto amplitude = std::abs(transformed[sourceOffset * WINDOW_DIMENSION * WINDOW_DIMENSION + j]);
-            const auto freq = hypot(j / WINDOW_DIMENSION, j % WINDOW_DIMENSION);
+            const auto amplitude = std::abs(transformed[sourceOffset * WINDOW_DIMENSION_Y * WINDOW_DIMENSION_X + j]);
+            const auto freq = hypot(j / WINDOW_DIMENSION_X, j % WINDOW_DIMENSION_X);
             if (freq > 2)
                 ordered[freq] = std::max(ordered[freq], amplitude);
         }
@@ -147,11 +155,11 @@ void CallBackFunc(int event, int x, int y, int flags, void* userdata)
 
         imshow("The plot", plot_result);
 
-        cv::Mat magI(WINDOW_DIMENSION, WINDOW_DIMENSION, CV_32FC1);
-        for (int j = 1; j < WINDOW_DIMENSION * WINDOW_DIMENSION; ++j)
+        cv::Mat magI(WINDOW_DIMENSION_Y, WINDOW_DIMENSION_X, CV_32FC1);
+        for (int j = 1; j < WINDOW_DIMENSION_Y * WINDOW_DIMENSION_X; ++j)
         {
-            const auto amplitude = std::abs(transformed[sourceOffset * WINDOW_DIMENSION * WINDOW_DIMENSION + j]);
-            magI.at<float>(j / WINDOW_DIMENSION, j % WINDOW_DIMENSION) = amplitude;
+            const auto amplitude = std::abs(transformed[sourceOffset * WINDOW_DIMENSION_Y * WINDOW_DIMENSION_X + j]);
+            magI.at<float>(j / WINDOW_DIMENSION_X, j % WINDOW_DIMENSION_X) = amplitude;
         }
 
         magI += Scalar::all(1);                    // switch to logarithmic scale
@@ -768,15 +776,17 @@ int main(int argc, char *argv[])
 
     //cv::Mat funcFloat = (dst - stripeless + 8) * 16;
     cv::Mat funcFloat = dst - stripeless;
-    normalize(funcFloat, funcFloat, 0, 255, cv::NORM_MINMAX);
+    normalize(funcFloat, funcFloat, -64, 255 + 64, cv::NORM_MINMAX);
     cv::Mat func;
     funcFloat.convertTo(func, CV_8U);
 
     cv::Mat imgCoherency, imgOrientation;
     calcGST(funcFloat, imgCoherency, imgOrientation);
 
-    //volatile 
-    auto transformed = tswdft2d<float>((float*)img.data, WINDOW_DIMENSION, WINDOW_DIMENSION, img.rows, img.cols);
+
+    cv::GaussianBlur(img, img, cv::Size(1, 33), 0, 0, cv::BORDER_DEFAULT);
+
+    auto transformed = tswdft2d<float>((float*)img.data, WINDOW_DIMENSION_Y, WINDOW_DIMENSION_X, img.rows, img.cols);
 
     cv::Mat visualization(visualizationRows, visualizationCols, CV_32FC1);
     cv::Mat amplitude(visualizationRows, visualizationCols, CV_32FC1);
@@ -793,17 +803,17 @@ int main(int argc, char *argv[])
 
             double v = 0;
 
-            for (int j = 1; j < WINDOW_DIMENSION/* * WINDOW_DIMENSION*/; ++j)
+            for (int j = 1; j < WINDOW_DIMENSION_X/* * WINDOW_DIMENSION*/; ++j)
             {
-                if (j / WINDOW_DIMENSION > WINDOW_DIMENSION / 2 || j % WINDOW_DIMENSION > WINDOW_DIMENSION / 2)
+                if (j / WINDOW_DIMENSION_X > WINDOW_DIMENSION_Y / 2 || j % WINDOW_DIMENSION_X > WINDOW_DIMENSION_X / 2)
                     continue;
 
-                const auto amplitude = std::abs(transformed[sourceOffset * WINDOW_DIMENSION * WINDOW_DIMENSION + j]) / sqrtf(j);
-                const auto freq = hypot(j / WINDOW_DIMENSION, j % WINDOW_DIMENSION);
+                const auto amplitude = std::abs(transformed[sourceOffset * WINDOW_DIMENSION_Y * WINDOW_DIMENSION_X + j]) / sqrtf(j);
+                const auto freq = hypot(j / WINDOW_DIMENSION_X, j % WINDOW_DIMENSION_X);
                 if (freq > 2)
                     ordered[freq] = std::max(ordered[freq], amplitude);
 
-                if (j % WINDOW_DIMENSION == 0)
+                if (j % WINDOW_DIMENSION_X == 0)
                     v += amplitude;
             }
 
@@ -841,17 +851,17 @@ int main(int argc, char *argv[])
 
             double v = 0;
 
-            for (int j = 1; j < WINDOW_DIMENSION* WINDOW_DIMENSION; ++j)
+            for (int j = 1; j < WINDOW_DIMENSION_Y * WINDOW_DIMENSION_X; ++j)
             {
-                if (j / WINDOW_DIMENSION > WINDOW_DIMENSION / 2 || j % WINDOW_DIMENSION > WINDOW_DIMENSION / 2)
+                if (j / WINDOW_DIMENSION_X > WINDOW_DIMENSION_Y / 2 || j % WINDOW_DIMENSION_X > WINDOW_DIMENSION_X / 2)
                     continue;
 
-                const auto amplitude = std::abs(transformed[sourceOffset * WINDOW_DIMENSION * WINDOW_DIMENSION + j]);// / sqrtf(j);
+                const auto amplitude = std::abs(transformed[sourceOffset * WINDOW_DIMENSION_Y * WINDOW_DIMENSION_X + j]);// / sqrtf(j);
                 //const auto freq = hypot(j / WINDOW_DIMENSION, j % WINDOW_DIMENSION);
                 //if (freq > 2)
                 //    ordered[freq] = std::max(ordered[freq], amplitude);
 
-                if (j % WINDOW_DIMENSION == 0)
+                if (j % WINDOW_DIMENSION_X == 0)
                     v += amplitude;
             }
 
@@ -897,10 +907,10 @@ int main(int argc, char *argv[])
             float threshold1 = 0;
             float threshold2 = 0;
 
-            for (int j = 3; j <= WINDOW_DIMENSION / 2; ++j)
+            for (int j = 3; j <= WINDOW_DIMENSION_X / 2; ++j)
             {
-                const auto amplitude1 = std::abs(transformed[sourceOffset1 * WINDOW_DIMENSION * WINDOW_DIMENSION + j]) / sqrt(j);
-                const auto amplitude2 = std::abs(transformed[sourceOffset2 * WINDOW_DIMENSION * WINDOW_DIMENSION + j]) / sqrt(j);
+                const auto amplitude1 = std::abs(transformed[sourceOffset1 * WINDOW_DIMENSION_Y * WINDOW_DIMENSION_X + j]) / sqrt(sqrt(j));
+                const auto amplitude2 = std::abs(transformed[sourceOffset2 * WINDOW_DIMENSION_Y * WINDOW_DIMENSION_X + j]) / sqrt(sqrt(j));
                 if (amplitude1 > threshold1)
                 {
                     freq1 = j;
@@ -913,11 +923,11 @@ int main(int argc, char *argv[])
                 }
             }
             //if (freq1 > 2 && freq1 >= ((freq2 * 3 / 5 - 1)) && freq1 <= ((freq2 * 3 / 5 + 1)))
-            if (freq2 > freq1 && freq2 >= freq1 * 5 / 3 && freq2 <= freq1 * 5 / 2)
+            if (freq2 > freq1 && freq2 >= freq1 * 5 / 3 && freq2 <= freq1 * 3)//5 / 2)
             {
-                const auto coherency = imgCoherency.at<float>(y + WINDOW_DIMENSION / 2, x + WINDOW_DIMENSION / 2);
+                const auto coherency = imgCoherency.at<float>(y + WINDOW_DIMENSION_Y / 2, x + WINDOW_DIMENSION_X / 2);
 
-                const auto orientationOk = imgOrientationBin.at<uchar>(y + WINDOW_DIMENSION / 2, x + WINDOW_DIMENSION / 2);
+                const auto orientationOk = imgOrientationBin.at<uchar>(y + WINDOW_DIMENSION_Y / 2, x + WINDOW_DIMENSION_X / 2);
 
                 if (coherency > 0.2 && orientationOk && y - lastTransitions[x] > 100) {
                     lastTransitions[x] = y;
@@ -937,13 +947,14 @@ int main(int argc, char *argv[])
     //cv::rectangle(borderline0, cv::Rect(max_loc.x, max_loc.y, 100, 100), cv::Scalar(255));
 
 
-    for (auto& v : ptSet)
-    {
-        v.y -= 2;
-    }
+    //for (auto& v : ptSet)
+    //{
+    //    v.y -= 1;
+    //}
 
     // filtering
 #if 1
+    for (;;)
     {
         PointsProvider provider(ptSet);
 
@@ -968,23 +979,30 @@ int main(int argc, char *argv[])
 
             infos.knnSearch(&pos[0], k, &index[0], &dist[0]);
 
-            goodOnes[i] = dist[k-1] < 15 * 15;
+            goodOnes[i] = dist[k-1] < 20 * 20;
         }
 
+        bool found = false;
         for (int i = ptSet.size(); --i >= 0;)
         {
             if (!goodOnes[i])
+            {
+                found = true;
                 ptSet.erase(ptSet.begin() + i);
+            }
         }
+        if (!found)
+            break;
     }
 #endif
 
+#if 1
     {
         // partition via our partitioning function
         std::vector<int> labels;
         int equilavenceClassesCount = cv::partition(ptSet, labels,
             [](const cv::Point& p1, const cv::Point& p2) {
-            return hypot(p2.x - p1.x, p2.y - p1.y) < 25;
+            return hypot(p2.x - p1.x, p2.y - p1.y) < 35;
             });
 
         std::vector<int> groupCounts(equilavenceClassesCount);
@@ -992,14 +1010,16 @@ int main(int argc, char *argv[])
         for (auto& l : labels)
             ++groupCounts[l];
 
-        auto maxIdx = std::max_element(groupCounts.begin(), groupCounts.end()) - groupCounts.begin();
+        //auto maxIdx = std::max_element(groupCounts.begin(), groupCounts.end()) - groupCounts.begin();
+        const auto threshold = *std::max_element(groupCounts.begin(), groupCounts.end()) * 0.4;
 
         for (int i = ptSet.size(); --i >= 0;)
         {
-            if (labels[i] != maxIdx)
+            if (groupCounts[labels[i]] < threshold)
                 ptSet.erase(ptSet.begin() + i);
         }
     }
+#endif
 
     for (auto& v : ptSet)
         borderline0.at<uchar>(v.y, v.x) = 255;
@@ -1123,6 +1143,59 @@ int main(int argc, char *argv[])
     cv::imshow("borderline", borderline);
     */
 
+
+    auto surf = cv::xfeatures2d::SURF::create(300);
+    std::vector<cv::KeyPoint> keypoints;
+    cv::Mat descriptors;
+    surf->detectAndCompute(func, cv::noArray(), keypoints, descriptors);
+
+    // http://itnotesblog.ru/note.php?id=271
+    cv::FlannBasedMatcher matcher;
+    std::vector< cv::DMatch > matches;
+    matcher.match(descriptors, GetKnownGood(), matches);
+
+    std::vector< cv::KeyPoint > goodkeypoints;
+
+    for (int i = 0; i < descriptors.rows; i++) {
+        if (matches[i].distance < 0.36) 
+        {
+            goodkeypoints.push_back(keypoints[i]);
+        }
+    }
+
+#if 0
+    std::vector<int> labels;
+    int equilavenceClassesCount = cv::partition(goodkeypoints, labels, [](const cv::KeyPoint& k1, const cv::KeyPoint& k2) {
+        const auto MAX_DIST = 15;
+        if (/*fabs(k1.pt.x - k2.pt.x) > MAX_DIST ||*/ fabs(k1.pt.y - k2.pt.y) > MAX_DIST)
+            return false;
+
+        auto[minSize, maxSize] = std::minmax(k1.size, k2.size);
+        if (maxSize / minSize > 1.35)
+            return false;
+
+        return true;
+    });
+
+    std::vector < std::vector<cv::KeyPoint>> outKeypoints(equilavenceClassesCount);
+    for (int i = 0; i < goodkeypoints.size(); ++i)
+    {
+        outKeypoints[labels[i]].push_back(goodkeypoints[i]);
+    }
+
+    cv::RNG rng(215526);
+    for (auto& kp : outKeypoints)
+    {
+        auto color = cv::Scalar(rng.uniform(30, 255), rng.uniform(30, 255), rng.uniform(30, 255));
+        cv::drawKeypoints(func, kp, func, color);// , cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
+    }
+#endif
+
+
+    auto color = cv::Scalar(0, 255, 0);
+    cv::drawKeypoints(func, goodkeypoints, func, color);// , cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
+
+
     cv::imshow("borderline0", borderline0);
 
 
@@ -1136,7 +1209,7 @@ int main(int argc, char *argv[])
         for (int i = 2; i < n_samples; ++i)
             y += poly.at<double>(i, 0) * std::pow(x * POLY_COEFF, i);
 
-        points_fitted.push_back(cv::Point(x + WINDOW_DIMENSION / 2, y + WINDOW_DIMENSION / 2));
+        points_fitted.push_back(cv::Point(x + WINDOW_DIMENSION_X / 2, y + WINDOW_DIMENSION_Y / 2));
     }
 
     cv::polylines(func, points_fitted, false, cv::Scalar(0, 255, 255), 1, 8, 0);
@@ -1147,8 +1220,8 @@ int main(int argc, char *argv[])
     std::vector<std::vector<cv::Point> > fillContAll;
     fillContAll.push_back(points_fitted);
 
-    fillContAll[0].push_back(cv::Point(IMAGE_DIMENSION - WINDOW_DIMENSION / 2, 0));
-    fillContAll[0].push_back(cv::Point(WINDOW_DIMENSION / 2, 0));
+    fillContAll[0].push_back(cv::Point(IMAGE_DIMENSION - WINDOW_DIMENSION_X / 2, 0));
+    fillContAll[0].push_back(cv::Point(WINDOW_DIMENSION_X / 2, 0));
 
     cv::fillPoly(theMask, fillContAll, cv::Scalar(255));
 

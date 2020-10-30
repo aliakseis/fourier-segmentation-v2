@@ -18,12 +18,18 @@
     <ClCompile Include="fourier-segmentation-v2.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="known-good.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="tswdft2d.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="nanoflann.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="known-good.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

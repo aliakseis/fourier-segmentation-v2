@@ -156,8 +156,10 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="fourier-segmentation-v2.cpp" />
+    <ClCompile Include="known-good.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="known-good.h" />
     <ClInclude Include="nanoflann.hpp" />
     <ClInclude Include="tswdft2d.h" />
   </ItemGroup>
