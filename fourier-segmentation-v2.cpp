@@ -1363,9 +1363,21 @@ int main(int argc, char *argv[])
     for (int i = 0; i < descriptors.rows; i++) {
         if (matches[i].distance < 0.33) 
         {
-            goodkeypoints.push_back(keypoints[i]);
+            double y = CalcPoly(poly, std::clamp(keypoints[i].pt.x - WINDOW_DIMENSION_X / 2, float(x_min), float(x_max)) * POLY_COEFF) + WINDOW_DIMENSION_Y / 2;
+            if (fabs(y - keypoints[i].pt.y) < 50)
+                goodkeypoints.push_back(keypoints[i]);
         }
     }
+
+    for (int i = goodkeypoints.size() - 1; --i >= 0;)
+        for (int j = goodkeypoints.size(); --j > i;)
+        {
+            if (hypot(goodkeypoints[i].pt.x - goodkeypoints[j].pt.x, goodkeypoints[i].pt.y - goodkeypoints[j].pt.y) < 5)
+            {
+                goodkeypoints.erase(goodkeypoints.begin() + j);
+            }
+        }
+
 
 #if 0
     std::vector<int> labels;
