@@ -1334,7 +1334,21 @@ int main(int argc, char *argv[])
     */
 
 
-    auto surf = cv::xfeatures2d::SURF::create(300);
+    int x_min = INT_MAX, x_max = INT_MIN;
+    // limits
+    for (auto& v : ptSet)
+    {
+        auto y = CalcPoly(poly, v.x * POLY_COEFF);
+        if (fabs(y - v.y) < 15)
+        {
+            x_min = std::min(x_min, v.x);
+            x_max = std::max(x_max, v.x);
+        }
+    }
+
+
+
+    auto surf = cv::xfeatures2d::SURF::create(500);
     std::vector<cv::KeyPoint> keypoints;
     cv::Mat descriptors;
     surf->detectAndCompute(func, cv::noArray(), keypoints, descriptors);
@@ -1347,7 +1361,7 @@ int main(int argc, char *argv[])
     std::vector< cv::KeyPoint > goodkeypoints;
 
     for (int i = 0; i < descriptors.rows; i++) {
-        if (matches[i].distance < 0.36) 
+        if (matches[i].distance < 0.33) 
         {
             goodkeypoints.push_back(keypoints[i]);
         }
@@ -1395,9 +1409,11 @@ int main(int argc, char *argv[])
         //double y = A.at<double>(0, 0) + A.at<double>(1, 0) * x +
         //    A.at<double>(2, 0)*std::pow(x, 2) + A.at<double>(3, 0)*std::pow(x, 3);
 
-        double y = poly.at<double>(0, 0) + poly.at<double>(1, 0) * x * POLY_COEFF;
-        for (int i = 2; i < n_samples; ++i)
-            y += poly.at<double>(i, 0) * std::pow(x * POLY_COEFF, i);
+        //double y = poly.at<double>(0, 0) + poly.at<double>(1, 0) * x * POLY_COEFF;
+        //for (int i = 2; i < n_samples; ++i)
+        //    y += poly.at<double>(i, 0) * std::pow(x * POLY_COEFF, i);
+
+        double y = CalcPoly(poly, std::clamp(x, x_min, x_max) * POLY_COEFF);
 
         points_fitted.push_back(cv::Point(x + WINDOW_DIMENSION_X / 2, y + WINDOW_DIMENSION_Y / 2));
     }
