@@ -14,7 +14,9 @@
 
 #include <opencv2/plot.hpp>
 
-#include "opencv2/xfeatures2d.hpp"
+#include <opencv2/xfeatures2d.hpp>
+
+#include <opencv2/ximgproc.hpp>
 
 #include <ceres/ceres.h>
 
@@ -25,6 +27,188 @@
 
 #include <random>
 
+
+
+
+
+
+namespace {
+
+using namespace cv;
+
+Vec4i extendedLine(const Vec4i& line, double d, double max_coeff) {
+    const auto length = hypot(line[2] - line[0], line[3] - line[1]);
+    const auto coeff = std::min(d / length, max_coeff);
+    double xd = (line[2] - line[0]) * coeff;
+    double yd = (line[3] - line[1]) * coeff;
+    return Vec4d(line[0] - xd, line[1] - yd, line[2] + xd, line[3] + yd);
+}
+
+std::vector<Point2i> boundingRectangleContour(const Vec4i& line, float d) {
+    // finds coordinates of perpendicular lines with length d in both line points
+    const auto length = hypot(line[2] - line[0], line[3] - line[1]);
+    const auto coeff = d / length;
+
+    // dx:  -dy
+    // dy:  dx
+    double yd = (line[2] - line[0]) * coeff;
+    double xd = -(line[3] - line[1]) * coeff;
+
+    return std::vector<Point2i> {
+        Point2i(line[0]-xd, line[1]-yd),
+        Point2i(line[0]+xd, line[1]+yd),
+        Point2i(line[2]+xd, line[3]+yd),
+        Point2i(line[2]-xd, line[3]-yd)
+    };
+}
+
+bool extendedBoundingRectangleLineEquivalence(const Vec4i& l1, const Vec4i& l2, 
+    float extensionLength, float extensionLengthMaxFraction,
+    float boundingRectangleThickness) {
+
+    Vec4i el1 = extendedLine(l1, extensionLength, extensionLengthMaxFraction);
+    Vec4i el2 = extendedLine(l2, extensionLength, extensionLengthMaxFraction);
+
+    // calculate window around extended line
+    // at least one point needs to inside extended bounding rectangle of other line,
+    std::vector<Point2i> lineBoundingContour = boundingRectangleContour(el1, boundingRectangleThickness / 2);
+    return
+        pointPolygonTest(lineBoundingContour, cv::Point(el2[0], el2[1]), false) >= 0 ||
+        pointPolygonTest(lineBoundingContour, cv::Point(el2[2], el2[3]), false) >= 0 ||
+
+        pointPolygonTest(lineBoundingContour, cv::Point(l2[0], l2[1]), false) >= 0 ||
+        pointPolygonTest(lineBoundingContour, cv::Point(l2[2], l2[3]), false) >= 0;
+}
+
+Vec4i HandlePointCloud(const std::vector<Point2i>& pointCloud) {
+    //lineParams: [vx,vy, x0,y0]: (normalized vector, point on our contour)
+    // (x,y) = (x0,y0) + t*(vx,vy), t -> (-inf; inf)
+    Vec4f lineParams;
+    fitLine(pointCloud, lineParams, DIST_L2, 0, 0.01, 0.01);
+
+    // derive the bounding xs of point cloud
+    std::vector<Point2i>::const_iterator minYP;
+    std::vector<Point2i>::const_iterator maxYP;
+    std::tie(minYP, maxYP) = std::minmax_element(pointCloud.begin(), pointCloud.end(),
+                                                 [](const Point2i& p1, const Point2i& p2) { return p1.y < p2.y; });
+
+    // derive y coords of fitted line
+    float m = lineParams[0] / lineParams[1];
+    int x1 = ((minYP->y - lineParams[3]) * m) + lineParams[2];
+    int x2 = ((maxYP->y - lineParams[3]) * m) + lineParams[2];
+
+    return { x1, minYP->y, x2, maxYP->y };
+}
+
+std::vector<Vec4i> reduceLines(const std::vector<Vec4i>& linesP,
+    float extensionLength, float extensionLengthMaxFraction,
+    float boundingRectangleThickness)
+{
+    // partition via our partitioning function
+    std::vector<int> labels;
+    int equilavenceClassesCount = cv::partition(linesP, labels, 
+        [extensionLength, extensionLengthMaxFraction, boundingRectangleThickness](const Vec4i& l1, const Vec4i& l2) {
+        return extendedBoundingRectangleLineEquivalence(
+            l1, l2,
+            // line extension length 
+            extensionLength,
+            // line extension length - as fraction of original line width
+            extensionLengthMaxFraction,
+            // thickness of bounding rectangle around each line
+            boundingRectangleThickness);
+    });
+
+    std::vector<std::vector<Vec4i>> groups(equilavenceClassesCount);
+    for (int i = 0; i < linesP.size(); i++) {
+        const Vec4i& detectedLine = linesP[i];
+        groups[labels[i]].push_back(detectedLine);
+    }
+
+    equilavenceClassesCount = groups.size();
+
+    // build point clouds out of each equivalence classes
+    std::vector<std::vector<Point2i>> pointClouds(equilavenceClassesCount);
+    for (int i = 0; i < equilavenceClassesCount; ++i) {
+        for (auto &detectedLine : groups[i]) {
+            pointClouds[i].emplace_back(detectedLine[0], detectedLine[1]);
+            pointClouds[i].emplace_back(detectedLine[2], detectedLine[3]);
+        }
+    }
+    std::vector<Vec4i> reducedLines = std::accumulate(
+        pointClouds.begin(), pointClouds.end(), std::vector<Vec4i>{},
+                [](std::vector<Vec4i> target, const std::vector<Point2i>& pointCloud) {
+                    target.push_back(HandlePointCloud(pointCloud));
+                    return target;
+                });
+
+    return reducedLines;
+}
+
+template <typename T>
+void MergeLines(std::vector<Vec4i>& reducedLines, T sortLam) {
+    for (int i = reducedLines.size(); --i >= 0;)
+    {
+        auto& line = reducedLines[i];
+        if (hypot(line[2] - line[0], line[3] - line[1]) > 40) {
+            continue;
+        }
+
+        auto val = sortLam(line);
+
+        double dist;
+        std::vector<Vec4i>::iterator it;
+        if (i == 0) {
+            it = reducedLines.begin() + 1;
+            dist = sortLam(*it) - val;
+        }
+        else if (i == reducedLines.size() - 1) {
+            it = reducedLines.begin() + i - 2;
+            dist = val - sortLam(*it);
+        }
+        else {
+            const auto dist1 = val - sortLam(reducedLines[i - 1]);
+            const auto dist2 = sortLam(reducedLines[i + 1]) - val;
+            if (dist1 < dist2) {
+                it = reducedLines.begin() + i - 1;
+                dist = dist1;
+            }
+            else {
+                it = reducedLines.begin() + i + 1;
+                dist = dist2;
+            }
+        }
+
+        const auto distY = abs((line[1] + line[3]) / 2 - ((*it)[1] + (*it)[3]) / 2)
+            - (abs(line[1] - line[3]) + abs((*it)[1] - (*it)[3])) / 2;
+
+        const auto threshold = 2.5;
+        const auto thresholdY = 25;
+        if (dist > threshold || distY > thresholdY) {
+            reducedLines.erase(reducedLines.begin() + i);
+            continue;
+        }
+
+
+        std::vector<Point2i> pointCloud;
+        for (auto &detectedLine : { line , *it }) {
+            pointCloud.emplace_back(detectedLine[0], detectedLine[1]);
+            pointCloud.emplace_back(detectedLine[2], detectedLine[3]);
+        }
+
+        line = HandlePointCloud(pointCloud);
+
+        reducedLines.erase(it);
+    }
+}
+
+} // namespace
+
+
+
+
+
+
+//////////////////////////////////////////////////////////////////////////////
 
 void calcGST(const cv::Mat& inputImg, cv::Mat& imgCoherencyOut, cv::Mat& imgOrientationOut, int w = 52)
 {
@@ -780,6 +964,12 @@ int main(int argc, char *argv[])
     cv::Mat func;
     funcFloat.convertTo(func, CV_8U);
 
+
+    // !!!
+    dst = func.clone();
+
+
+
     cv::Mat imgCoherency, imgOrientation;
     calcGST(funcFloat, imgCoherency, imgOrientation);
 
@@ -1241,6 +1431,613 @@ int main(int argc, char *argv[])
 
     cv::imshow("imgCoherency", imgCoherency);
     cv::imshow("imgOrientation", imgOrientation);
+
+
+
+
+
+///////////////////////////////////////////////////////////////////////////////
+
+    adaptiveThreshold(dst, dst, 255, ADAPTIVE_THRESH_MEAN_C, THRESH_BINARY_INV, 19, 2.);
+
+    dst &= theMask;
+    dst &= imgCoherencyBin;
+
+    cv::ximgproc::thinning(dst, dst);
+
+    // Specify size on vertical axis
+    int vertical_size = 5;// dst.rows / 30;
+    // Create structure element for extracting vertical lines through morphology operations
+    Mat verticalStructure = getStructuringElement(MORPH_RECT, Size(1, vertical_size));
+    // Apply morphology operations
+    erode(dst, dst, verticalStructure);
+    dilate(dst, dst, verticalStructure);
+
+
+    //Canny(dst, dst, 50, 200, 3);
+
+    //cv::Rect roi(50, 50, dst.cols - 100, dst.rows - 100);
+    //dst = dst(roi);
+
+
+#if 0
+    // Declare the variables we are going to use
+    Mat src_gray, dst;
+    int kernel_size = 3;
+    int scale = 1;
+    int delta = 0;
+    int ddepth = CV_16S;
+
+    GaussianBlur(src, src_gray, Size(3, 3), 0, 0, BORDER_DEFAULT);
+    Laplacian(src_gray, dst, ddepth, kernel_size, scale, delta, BORDER_DEFAULT);
+    // converting back to CV_8U
+    convertScaleAbs(dst, dst);
+#endif
+
+    //![edge_detection]
+
+    // Copy edges to the images that will display the results in BGR
+    Mat cdstP;
+    cvtColor(dst, cdstP, COLOR_GRAY2BGR);
+    //cdstP = cdst.clone();
+
+    /*
+    //![hough_lines]
+    // Standard Hough Line Transform
+    Mat cdst = cdstP.clone();
+    vector<Vec2f> lines; // will hold the results of the detection
+    HoughLines(dst, lines, 1, CV_PI / 180, 200, 0, 0, 0, 0.1);// CV_PI / 2 - 0.2, CV_PI / 2 + 0.2 ); // runs the actual detection
+    //HoughLines(dst, lines, 1, CV_PI / 180, 800); // runs the actual detection
+    //![hough_lines]
+    //![draw_lines]
+    // Draw the lines
+    for( size_t i = 0; i < lines.size(); i++ )
+    {
+        float rho = lines[i][0], theta = lines[i][1];
+        Point pt1, pt2;
+        double a = cos(theta), b = sin(theta);
+        double x0 = a*rho, y0 = b*rho;
+        pt1.x = cvRound(x0 + 1000*(-b));
+        pt1.y = cvRound(y0 + 1000*(a));
+        pt2.x = cvRound(x0 - 1000*(-b));
+        pt2.y = cvRound(y0 - 1000*(a));
+        line( cdst, pt1, pt2, Scalar(0,0,255), 1, LINE_AA);
+    }
+    //![draw_lines]
+    //*/
+
+    //![hough_lines_p]
+    // Probabilistic Line Transform
+    std::vector<cv::Vec4i> linesP; // will hold the results of the detection
+    const int threshold = 10;
+    HoughLinesP(dst, linesP, 1, CV_PI / 180 / 10, threshold, 5, 25); // runs the actual detection
+    //![hough_lines_p]
+    //![draw_lines_p]
+    // Draw the lines
+    //for( size_t i = 0; i < linesP.size(); i++ )
+
+    linesP.erase(std::remove_if(linesP.begin(), linesP.end(), [&dst](const Vec4i& l) {
+        const double expectedAlgle = 0;
+        const double expectedAngleDiff = 1.;
+        const auto border = 10;
+        return l[1] == l[3] || fabs(double(l[0] - l[2]) / (l[1] - l[3]) + expectedAlgle) > expectedAngleDiff
+            || l[0] < border && l[2] < border || l[1] == 0 && l[3] == 0
+            || l[0] >= (dst.cols - border) && l[2] >= (dst.cols - border) || l[1] == dst.rows - 1 && l[3] == dst.rows - 1;
+    }), linesP.end());
+
+    auto angleSortLam = [](const Vec4i& l) {
+        return double(l[0] - l[2]) / (l[1] - l[3]);
+    };
+
+    std::sort(linesP.begin(), linesP.end(), [&angleSortLam](const Vec4i& l1, const Vec4i& l2) {
+        return angleSortLam(l1) < angleSortLam(l2);
+    });
+
+    const double maxDiff = 0.1;
+
+    auto itFirst = linesP.begin();
+    auto itLast = linesP.begin();
+
+    double sum = 0;
+    double maxSum = 0;
+
+    auto itBegin = linesP.begin();
+    auto itEnd = linesP.begin();
+
+    while (itFirst != linesP.end() && itLast != linesP.end())
+    {
+        auto start = angleSortLam(*itFirst);
+
+        while (itLast != linesP.end() && angleSortLam(*itLast) < start + maxDiff)
+        {
+            sum += hypot((*itLast)[0] - (*itLast)[2], (*itLast)[1] - (*itLast)[3]);
+            ++itLast;
+        }
+        if (sum > maxSum)
+        {
+            itBegin = itFirst;
+            itEnd = itLast;
+            maxSum = sum;
+        }
+
+
+        sum -= hypot((*itFirst)[0] - (*itFirst)[2], (*itFirst)[1] - (*itFirst)[3]);
+        ++itFirst;
+    }
+
+    // vector<Vec4i>
+    linesP = { itBegin, itEnd };
+
+
+    //for (int i = linesP.size(); --i >= 0; )
+    //{
+    //    Vec4i l = linesP[i];
+    //    const double expectedAlgle = 0.05;
+    //    const auto border = 10;
+    //    if (l[1] == l[3] || fabs(double(l[0] - l[2]) / (l[1] - l[3]) + expectedAlgle) > expectedAlgle
+    //        || l[0] < border && l[2] < border || l[1] == 0 && l[3] == 0
+    //        || l[0] >= (dst.cols - border) && l[2] >= (dst.cols - border) || l[1] == dst.rows - 1 && l[3] == dst.rows - 1)
+    //    //if (l[1] == l[3] || fabs(double(l[0] - l[2]) / (l[1] - l[3])) > 0.1)
+    //    {
+    //        linesP.erase(linesP.begin() + i);
+    //        continue;
+    //    }
+
+    //    auto color = (min(l[1], l[3]) < 380) ? Scalar(0, 0, 255) : Scalar(0, 255, 0);
+
+    //    line( cdstP, Point(l[0], l[1]), Point(l[2], l[3]), color, 1, LINE_AA);
+    //}
+    //![draw_lines_p]
+
+    for (Vec4i& l : linesP) {
+        auto color = (min(l[1], l[3]) < 380) ? Scalar(0, 0, 255) : Scalar(0, 255, 0);
+        line(cdstP, Point(l[0], l[1]), Point(l[2], l[3]), color, 1, LINE_AA);
+    }
+
+    /////////////////////////////////////////////////////////////////////////////////////
+#if 0
+    //// remove small lines
+    //std::vector<Vec4i> linesWithoutSmall;
+    //std::copy_if(linesP.begin(), linesP.end(), std::back_inserter(linesWithoutSmall), [](Vec4f line) {
+    //    float length = sqrtf((line[2] - line[0]) * (line[2] - line[0])
+    //        + (line[3] - line[1]) * (line[3] - line[1]));
+    //    return length > 5;
+    //});
+
+    //std::cout << "Detected: " << linesWithoutSmall.size() << std::endl;
+
+    // partition via our partitioning function
+    std::vector<int> labels;
+    int equilavenceClassesCount = cv::partition(linesP, labels, [](const Vec4i& l1, const Vec4i& l2) {
+        return extendedBoundingRectangleLineEquivalence(
+            l1, l2,
+            // line extension length 
+            25,
+            // line extension length - as fraction of original line width
+            1.0,
+            // thickness of bounding rectangle around each line
+            3);
+    });
+
+    //std::cout << "Equivalence classes: " << equilavenceClassesCount << std::endl;
+
+    Mat detectedLinesImg = Mat::zeros(dst.rows, dst.cols, CV_8UC3);
+    Mat reducedLinesImg = detectedLinesImg.clone();
+
+    std::vector<std::vector<Vec4i>> groups(equilavenceClassesCount);
+    for (int i = 0; i < linesP.size(); i++) {
+        Vec4i& detectedLine = linesP[i];
+        groups[labels[i]].push_back(detectedLine);
+    }
+
+#if 0
+    for (int i = groups.size(); --i >= 0; ) {
+        auto& group = groups[i];
+        int minX = INT_MAX;
+        int minY = INT_MAX;
+        int maxX = INT_MIN;
+        int maxY = INT_MIN;
+        int length = 0;
+
+        for (auto& line : group) {
+            minX = std::min({ minX, line[0], line[2] });
+            maxX = std::max({ maxX, line[0], line[2] });
+            minY = std::min({ minY, line[1], line[3] });
+            maxY = std::max({ maxY, line[1], line[3] });
+
+            length += hypot(line[2] - line[0], line[3] - line[1]);
+        }
+
+        const auto extent = hypot(maxX - minX, maxY - minY);
+
+        if (length > extent * 1.5) { // split
+
+            std::vector<Point2i> pointCloud;
+            for (auto& detectedLine : group) {
+                pointCloud.push_back(Point2i(detectedLine[0], detectedLine[1]));
+                pointCloud.push_back(Point2i(detectedLine[2], detectedLine[3]));
+            }
+
+            Vec4f lineParams;
+            fitLine(pointCloud, lineParams, DIST_L2, 0, 0.01, 0.01);
+
+            const auto cos_phi = -lineParams[1];
+            const auto sin_phi = lineParams[0];
+
+            std::vector<double> offsets;
+            for (auto& detectedLine : group) {
+                double x = (detectedLine[0] + detectedLine[2]) / 2.;
+                double y = (detectedLine[1] + detectedLine[3]) / 2.;
+                double x_new = x * cos_phi - y * sin_phi;
+                offsets.push_back(x_new);
+            }
+
+            const auto minmax = std::minmax_element(offsets.begin(), offsets.end());
+            const auto medium = (*minmax.first + *minmax.second) / 2;
+
+            std::vector<Vec4i> first, second;
+            for (int i = 0; i < group.size(); ++i) {
+                auto& line = group[i];
+                if (offsets[i] < medium)
+                    first.push_back(line);
+                else
+                    second.push_back(line);
+            }
+
+            group = first;
+            groups.push_back(second);
+        }
+    }
+#endif
+
+    equilavenceClassesCount = groups.size();
+
+    // grab a random colour for each equivalence class
+    RNG rng(215526);
+    std::vector<Scalar> colors(equilavenceClassesCount);
+    for (int i = 0; i < equilavenceClassesCount; i++) {
+        colors[i] = Scalar(rng.uniform(30, 255), rng.uniform(30, 255), rng.uniform(30, 255));;
+    }
+
+    // draw original detected lines
+    //for (int i = 0; i < linesP.size(); i++) {
+    for (int i = 0; i < equilavenceClassesCount; ++i)
+        for (auto &detectedLine : groups[i]) {
+            //Vec4i& detectedLine = linesP[i];
+            line(detectedLinesImg,
+                cv::Point(detectedLine[0], detectedLine[1]),
+                cv::Point(detectedLine[2], detectedLine[3]), colors[i/*labels[i]*/], 2);
+        }
+
+    // build point clouds out of each equivalence classes
+    std::vector<std::vector<Point2i>> pointClouds(equilavenceClassesCount);
+    //for (int i = 0; i < linesP.size(); i++) {
+    for (int i = 0; i < equilavenceClassesCount; ++i)
+        for (auto &detectedLine : groups[i]) {
+            //Vec4i& detectedLine = linesP[i];
+            pointClouds[i/*labels[i]*/].push_back(Point2i(detectedLine[0], detectedLine[1]));
+            pointClouds[i/*labels[i]*/].push_back(Point2i(detectedLine[2], detectedLine[3]));
+        }
+
+    // fit line to each equivalence class point cloud
+    //std::vector<Vec4i> reducedLines = std::accumulate(
+    //    pointClouds.begin(), pointClouds.end(), std::vector<Vec4i>{}, [](std::vector<Vec4i> target, const std::vector<Point2i>& _pointCloud) {
+    //    std::vector<Point2i> pointCloud = _pointCloud;
+
+    //    //lineParams: [vx,vy, x0,y0]: (normalized vector, point on our contour)
+    //    // (x,y) = (x0,y0) + t*(vx,vy), t -> (-inf; inf)
+    //    Vec4f lineParams; 
+    //    fitLine(pointCloud, lineParams, DIST_L2, 0, 0.01, 0.01);
+
+    //    // derive the bounding xs of point cloud
+    //    decltype(pointCloud)::iterator minXP, maxXP;
+    //    std::tie(minXP, maxXP) = std::minmax_element(pointCloud.begin(), pointCloud.end(), [](const Point2i& p1, const Point2i& p2) { return p1.x < p2.x; });
+
+    //    // derive y coords of fitted line
+    //    float m = lineParams[1] / lineParams[0];
+    //    int y1 = ((minXP->x - lineParams[2]) * m) + lineParams[3];
+    //    int y2 = ((maxXP->x - lineParams[2]) * m) + lineParams[3];
+
+    //    target.push_back(Vec4i(minXP->x, y1, maxXP->x, y2));
+    //    return target;
+    //});
+    std::vector<Vec4i> reducedLines = std::accumulate(
+        pointClouds.begin(), pointClouds.end(), std::vector<Vec4i>{}, [](std::vector<Vec4i> target, const std::vector<Point2i>& _pointCloud) {
+        std::vector<Point2i> pointCloud = _pointCloud;
+
+        //lineParams: [vx,vy, x0,y0]: (normalized vector, point on our contour)
+        // (x,y) = (x0,y0) + t*(vx,vy), t -> (-inf; inf)
+        Vec4f lineParams;
+        fitLine(pointCloud, lineParams, DIST_L2, 0, 0.01, 0.01);
+
+        // derive the bounding xs of point cloud
+        decltype(pointCloud)::iterator minYP, maxYP;
+        std::tie(minYP, maxYP) = std::minmax_element(pointCloud.begin(), pointCloud.end(), [](const Point2i& p1, const Point2i& p2) { return p1.y < p2.y; });
+
+        // derive y coords of fitted line
+        float m = lineParams[0] / lineParams[1];
+        int x1 = ((minYP->y - lineParams[3]) * m) + lineParams[2];
+        int x2 = ((maxYP->y - lineParams[3]) * m) + lineParams[2];
+
+        target.push_back(Vec4i(x1, minYP->y, x2, maxYP->y));
+        return target;
+    });
+
+    //for (Vec4i reduced : reducedLines) {
+    //    line(reducedLinesImg, Point(reduced[0], reduced[1]), Point(reduced[2], reduced[3]), Scalar(255, 255, 255), 2);
+    //}
+
+    for (int i = 0; i < reducedLines.size(); ++i)
+    {
+        auto& reduced = reducedLines[i];
+        line(reducedLinesImg, Point(reduced[0], reduced[1]), Point(reduced[2], reduced[3]), colors[i], 2);
+    }
+#endif
+
+    auto reducedLines0 = reduceLines(linesP, 25, 1.0, 3);
+
+    {
+        // find prevailing direction
+        std::vector<Point2i> pointCloud;
+        for (auto& reduced : reducedLines0)
+        {
+            auto centerX = (reduced[0] + reduced[2]) / 2;
+            auto centerY = (reduced[1] + reduced[3]) / 2;
+            pointCloud.emplace_back(reduced[0] - centerX, reduced[1] - centerY);
+            pointCloud.emplace_back(reduced[2] - centerX, reduced[3] - centerY);
+        }
+        Vec4f lineParams;
+        fitLine(pointCloud, lineParams, DIST_L2, 0, 0.01, 0.01);
+        //const auto cos_phi = -lineParams[1];
+        //const auto sin_phi = -lineParams[0];
+        const auto tan_phi = lineParams[0] / lineParams[1];
+
+        reducedLines0.erase(std::remove_if(reducedLines0.begin(), reducedLines0.end(), [tan_phi](const Vec4i& line) {
+            return hypot(line[2] - line[0], line[3] - line[1]) <= 10
+                || fabs(double(line[2] - line[0]) / (line[3] - line[1]) - tan_phi) > 0.05
+                ;
+        }), reducedLines0.end());
+    }
+
+    auto reducedLines = reduceLines(reducedLines0, 50, 0.7, 2.5);
+
+    //reducedLines.erase(std::remove_if(reducedLines.begin(), reducedLines.end(), [](const Vec4i& line) {
+    //    return hypot(line[2] - line[0], line[3] - line[1]) <= 10;
+    //}), reducedLines.end());
+
+    Mat reducedLinesImg0 = Mat::zeros(dst.rows, dst.cols, CV_8UC3);
+    {
+        RNG rng(215526);
+        for (auto & reduced : reducedLines0)
+        {
+            auto color = Scalar(rng.uniform(30, 255), rng.uniform(30, 255), rng.uniform(30, 255));;
+            line(reducedLinesImg0, Point(reduced[0], reduced[1]), Point(reduced[2], reduced[3]), color, 2);
+        }
+    }
+
+    //Mat reducedLinesImg = Mat::zeros(dst.rows, dst.cols, CV_8UC3);
+    //{
+    //    RNG rng(215526);
+    //    for (int i = 0; i < reducedLines.size(); ++i)
+    //    {
+    //        auto color = Scalar(rng.uniform(30, 255), rng.uniform(30, 255), rng.uniform(30, 255));;
+    //        auto& reduced = reducedLines[i];
+    //        line(reducedLinesImg, Point(reduced[0], reduced[1]), Point(reduced[2], reduced[3]), color, 2);
+    //    }
+    //}
+
+    // find prevailing direction
+    std::vector<Point2i> pointCloud;
+    for (auto& reduced : reducedLines)
+    {
+        auto centerX = (reduced[0] + reduced[2]) / 2;
+        auto centerY = (reduced[1] + reduced[3]) / 2;
+        pointCloud.emplace_back(reduced[0] - centerX, reduced[1] - centerY);
+        pointCloud.emplace_back(reduced[2] - centerX, reduced[3] - centerY);
+    }
+    Vec4f lineParams;
+    fitLine(pointCloud, lineParams, DIST_L2, 0, 0.01, 0.01);
+    auto cos_phi = lineParams[1];
+    auto sin_phi = lineParams[0];
+    if (cos_phi < 0) {
+        cos_phi = -cos_phi;
+        sin_phi = -sin_phi;
+    }
+
+    auto sortLam = [cos_phi, sin_phi](const Vec4i& detectedLine) {
+        double x = (detectedLine[0] + detectedLine[2]) / 2.;
+        double y = (detectedLine[1] + detectedLine[3]) / 2.;
+        double x_new = x * cos_phi - y * sin_phi;
+        return x_new;
+    };
+
+    std::sort(reducedLines.begin(), reducedLines.end(), [&sortLam](const Vec4i& l1, const Vec4i& l2) {
+        return sortLam(l1) < sortLam(l2);
+    });
+
+    auto approveLam = [](const Vec4i& line) {
+        return hypot(line[2] - line[0], line[3] - line[1]) > 100;
+    };
+
+    reducedLines.erase(reducedLines.begin(), std::find_if(reducedLines.begin(), reducedLines.end(), approveLam));
+    reducedLines.erase(std::find_if(reducedLines.rbegin(), reducedLines.rend(), approveLam).base(), reducedLines.end());
+
+    // merge
+#if 1
+    for (int i = reducedLines.size(); --i >= 0;)
+    {
+        auto& line = reducedLines[i];
+        if (hypot(line[2] - line[0], line[3] - line[1]) > 40) {
+            continue;
+        }
+
+        auto val = sortLam(line);
+
+        double dist;
+        decltype(reducedLines)::iterator it;
+        if (i == 0) {
+            it = reducedLines.begin() + 1;
+            dist = sortLam(*it) - val;
+        }
+        else if (i == reducedLines.size() - 1) {
+            it = reducedLines.begin() + i - 2;
+            dist = val - sortLam(*it);
+        }
+        else {
+            const auto dist1 = val - sortLam(reducedLines[i - 1]);
+            const auto dist2 = sortLam(reducedLines[i + 1]) - val;
+            if (dist1 < dist2) {
+                it = reducedLines.begin() + i - 1;
+                dist = dist1;
+            }
+            else {
+                it = reducedLines.begin() + i + 1;
+                dist = dist2;
+            }
+        }
+
+        const auto distY = abs((line[1] + line[3]) / 2 - ((*it)[1] + (*it)[3]) / 2)
+            - (abs(line[1] - line[3]) + abs((*it)[1] - (*it)[3])) / 2;
+
+        const auto threshold = 2.5;
+        const auto thresholdY = 25;
+        if (dist > threshold || distY > thresholdY) {
+            reducedLines.erase(reducedLines.begin() + i);
+            continue;
+        }
+
+
+        std::vector<Point2i> pointCloud;
+        for (auto &detectedLine : { line , *it }) {
+            pointCloud.emplace_back(detectedLine[0], detectedLine[1]);
+            pointCloud.emplace_back(detectedLine[2], detectedLine[3]);
+        }
+
+        line = HandlePointCloud(pointCloud);
+
+        reducedLines.erase(it);
+    }
+#endif
+
+    // normalize direction
+    for (auto& line : reducedLines) {
+        if (line[1] > line[3]) {
+            std::swap(line[0], line[2]);
+            std::swap(line[1], line[3]);
+        }
+    }
+
+    // garbage in garbage out
+    int y0 = INT_MAX;
+    int i0 = 0;
+    for (int i = 0; i < reducedLines.size(); ++i) {
+        int y = reducedLines[i][1] + reducedLines[i][0];
+        if (y < y0) {
+            y0 = y;
+            i0 = i;
+        }
+    }
+    if (!(i0 & 1)) {
+        for (int i = 0; i < i0; i += 2)
+        {
+            auto& line = reducedLines[i];
+            const int y = y0 - line[0];
+            if (line[1] > y) {
+                line[0] = line[2] + double(line[0] - line[2]) / (line[1] - line[3]) * (y - line[3]);
+                line[1] = y;
+            }
+        }
+    }
+
+
+    Mat reducedLinesImg = Mat::zeros(dst.rows, dst.cols, CV_8UC3);
+    {
+        RNG rng(215526);
+        for (auto & reduced : reducedLines)
+        {
+            auto color = Scalar(rng.uniform(30, 255), rng.uniform(30, 255), rng.uniform(30, 255));;
+            line(reducedLinesImg, Point(reduced[0], reduced[1]), Point(reduced[2], reduced[3]), color, 2);
+        }
+    }
+
+    for (int i = 0; i < int(reducedLines.size()) - 1; ++i) {
+        auto& first = reducedLines[i];
+        auto& second = reducedLines[i + 1];
+        if (first[1] > second[1]) {
+            continue;
+        }
+
+        const auto y_first = first[0] * sin_phi + first[1] * cos_phi;
+        const auto y_second = second[0] * sin_phi + second[1] * cos_phi;
+
+        const auto x_first = first[0] * cos_phi - first[1] * sin_phi;
+        const auto x_second = second[0] * cos_phi - second[1] * sin_phi;
+
+        const auto diff = y_second - y_first;
+
+        std::cout << (diff * 1.27) << '\n';
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    //imshow("funkyFunc", funkyFunc);
+
+    //imshow("level", level);
+
+
+    //imshow("lowLevel", lowLevel);
+    ////imshow("funkyLowLevel", funkyLowLevel);
+
+
+
+    //imshow("Filtered", filtered);
+
+    //imshow("Mask", mask);
+
+    imshow("Transform", dst);
+
+    //imshow("Threshold0", thresh0);
+
+    //imshow("Threshold", thresh);
+
+    //imshow("Detected Lines (in red) - Line Transform", cdst);
+
+    imshow("Detected Lines (in red) - Probabilistic Line Transform", cdstP);
+    //![imshow]
+
+
+    //imshow("Detected Lines", detectedLinesImg);
+    imshow("Reduced Lines 0", reducedLinesImg0);
+    imshow("Reduced Lines", reducedLinesImg);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
     cv::setMouseCallback("func", CallBackFunc, &transformed);
