@@ -952,6 +952,23 @@ int main(int argc, char *argv[])
     cv::GaussianBlur(img, dst, cv::Size(kernel_size, kernel_size), 0, 0, cv::BORDER_DEFAULT);
     //const auto filtered = dst.clone();
 
+    Mat background;
+    GaussianBlur(img, background, Size(63, 63), 0, 0, BORDER_DEFAULT);
+    //background -= 1;
+
+    Mat diff = dst < background;
+
+    // mask
+    Mat mask = dst < 180.;
+    //dst.convertTo(mask, CV_8U);
+    //threshold(dst, mask, 180, 255, THRESH_BINARY_INV);
+    int horizontal_size = 40;
+    // Create structure element for extracting vertical lines through morphology operations
+    Mat horizontalStructure = getStructuringElement(MORPH_RECT, Size(horizontal_size, 1));
+    // Apply morphology operations
+    dilate(mask, mask, horizontalStructure);
+
+
     dst += 1.;
     cv::log(dst, dst);
 
@@ -1470,6 +1487,11 @@ int main(int argc, char *argv[])
 
     dst &= theMask;
     dst &= imgCoherencyBin;
+
+    dst &= mask;
+
+    dst &= diff;
+
 
     cv::ximgproc::thinning(dst, dst);
 
@@ -2033,7 +2055,8 @@ int main(int argc, char *argv[])
 
     //imshow("Filtered", filtered);
 
-    //imshow("Mask", mask);
+    imshow("Mask", mask);
+    imshow("Diff", diff);
 
     imshow("Transform", dst);
 
