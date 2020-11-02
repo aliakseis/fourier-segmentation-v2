@@ -959,7 +959,7 @@ int main(int argc, char *argv[])
     Mat diff = dst < background;
 
     // mask
-    Mat mask = dst < 180.;
+    Mat mask = dst < (cv::mean(dst.row(0))[0] - 30.);
     //dst.convertTo(mask, CV_8U);
     //threshold(dst, mask, 180, 255, THRESH_BINARY_INV);
     int horizontal_size = 40;
