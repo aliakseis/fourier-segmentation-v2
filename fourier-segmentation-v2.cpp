@@ -1192,7 +1192,7 @@ int main(int argc, char *argv[])
         std::vector<int> labels;
         int equilavenceClassesCount = cv::partition(ptSet, labels,
             [](const cv::Point& p1, const cv::Point& p2) {
-            return hypot(p2.x - p1.x, p2.y - p1.y) < 35;
+            return hypot(p2.x - p1.x, p2.y - p1.y) < 25;
             });
 
         std::vector<int> groupCounts(equilavenceClassesCount);
@@ -1348,7 +1348,7 @@ int main(int argc, char *argv[])
 
 
 
-    auto surf = cv::xfeatures2d::SURF::create(500);
+    auto surf = cv::xfeatures2d::SURF::create(1700);
     std::vector<cv::KeyPoint> keypoints;
     cv::Mat descriptors;
     surf->detectAndCompute(func, cv::noArray(), keypoints, descriptors);
