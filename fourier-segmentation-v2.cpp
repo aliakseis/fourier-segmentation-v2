@@ -944,8 +944,30 @@ int main(int argc, char *argv[])
     cv::Mat img;
     src.convertTo(img, CV_32F);
 
+    //for (int y = 0; y < img.rows; y++) {
+    //    for (int x = 0; x < img.cols; x++) {
+    //        const auto threshold = 252;
+    //        int v = img.at<float>(y, x);
+    //        if (v > threshold)
+    //            img.at<float>(y, x) = v + (v - threshold) * 16;
+    //    }
+    //}
+
 
     cv::resize(img, img, cv::Size(IMAGE_DIMENSION, IMAGE_DIMENSION), 0, 0, cv::INTER_LANCZOS4);
+
+    //cv::Mat special(IMAGE_DIMENSION, IMAGE_DIMENSION, CV_8UC1);
+    //for (int y = 0; y < img.rows; y++) {
+    //    for (int x = 0; x < img.cols; x++) {
+    //        //const auto threshold = 230;
+    //        int v = img.at<float>(y, x);
+
+    //        special.at<uchar>(y, x) = (v < 254 && v > 200)? 255 : 0;
+    //    }
+    //}
+    //cv::imshow("special", special);
+
+
 
     const auto kernel_size = 3;
     cv::Mat dst;
@@ -959,7 +981,13 @@ int main(int argc, char *argv[])
     Mat diff = dst < background;
 
     // mask
-    Mat mask = dst < (cv::mean(dst.row(0))[0] - 30.);
+    auto thr = cv::mean(dst.row(0))[0];
+    std::cout << "Threshold: " << thr << '\n';
+    if (thr > 254.)
+        thr -= 10;
+    else
+        thr -= 30;
+    Mat mask = dst < thr;
     //dst.convertTo(mask, CV_8U);
     //threshold(dst, mask, 180, 255, THRESH_BINARY_INV);
     int horizontal_size = 40;
@@ -1485,18 +1513,22 @@ int main(int argc, char *argv[])
 
     adaptiveThreshold(dst, dst, 255, ADAPTIVE_THRESH_MEAN_C, THRESH_BINARY_INV, 19, 2.);
 
-    dst &= theMask;
     dst &= imgCoherencyBin;
 
     dst &= mask;
 
     dst &= diff;
 
+    imshow("Dst before", dst);
 
     cv::ximgproc::thinning(dst, dst);
 
+    //dst &= theMask;
+
+    imshow("Thinning", dst);
+
     // Specify size on vertical axis
-    int vertical_size = 5;// dst.rows / 30;
+    int vertical_size = 4;// dst.rows / 30;
     // Create structure element for extracting vertical lines through morphology operations
     Mat verticalStructure = getStructuringElement(MORPH_RECT, Size(1, vertical_size));
     // Apply morphology operations
@@ -1996,6 +2028,23 @@ int main(int argc, char *argv[])
                 line[0] = line[2] + double(line[0] - line[2]) / (line[1] - line[3]) * (y - line[3]);
                 line[1] = y;
             }
+        }
+    }
+
+    // Cutting lines
+    for (int i = reducedLines.size(); --i >= 0;)
+    {
+        auto& line = reducedLines[i];
+        double x = (line[0] + line[2]) / 2.;
+        double y = CalcPoly(poly, std::clamp(x - WINDOW_DIMENSION_X / 2, double(x_min), double(x_max)) * POLY_COEFF) + WINDOW_DIMENSION_Y / 2;
+        if (y < line[1] || y > line[3])
+        {
+            reducedLines.erase(reducedLines.begin() + i);
+        }
+        else
+        {
+            line[2] = line[0] + double(line[2] - line[0]) / (line[3] - line[1]) * (y - line[1]);
+            line[3] = y;
         }
     }
 
