@@ -1528,7 +1528,7 @@ int main(int argc, char *argv[])
     imshow("Thinning", dst);
 
     // Specify size on vertical axis
-    int vertical_size = 4;// dst.rows / 30;
+    int vertical_size = 5;// dst.rows / 30;
     // Create structure element for extracting vertical lines through morphology operations
     Mat verticalStructure = getStructuringElement(MORPH_RECT, Size(1, vertical_size));
     // Apply morphology operations
@@ -1881,7 +1881,7 @@ int main(int argc, char *argv[])
         }), reducedLines0.end());
     }
 
-    auto reducedLines = reduceLines(reducedLines0, 50, 0.7, 2.7);
+    auto reducedLines = reduceLines(reducedLines0, 50, 0.7, 4);
 
     //reducedLines.erase(std::remove_if(reducedLines.begin(), reducedLines.end(), [](const Vec4i& line) {
     //    return hypot(line[2] - line[0], line[3] - line[1]) <= 10;
