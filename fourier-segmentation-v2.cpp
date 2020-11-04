@@ -2032,12 +2032,15 @@ int main(int argc, char *argv[])
     }
 
     // Cutting lines
+    const auto removeThreshold = 15;
     for (int i = reducedLines.size(); --i >= 0;)
     {
         auto& line = reducedLines[i];
         double x = (line[0] + line[2]) / 2.;
         double y = CalcPoly(poly, std::clamp(x - WINDOW_DIMENSION_X / 2, double(x_min), double(x_max)) * POLY_COEFF) + WINDOW_DIMENSION_Y / 2;
-        if (y < line[1] || y > line[3])
+        if (y > line[3])
+            continue;
+        if (y < line[1] + removeThreshold)
         {
             reducedLines.erase(reducedLines.begin() + i);
         }
