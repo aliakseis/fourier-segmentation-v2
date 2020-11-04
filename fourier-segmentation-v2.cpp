@@ -27,7 +27,7 @@
 
 #include <random>
 
-
+#include <array>
 
 
 
@@ -36,15 +36,15 @@ namespace {
 
 using namespace cv;
 
-Vec4i extendedLine(const Vec4i& line, double d, double max_coeff) {
+auto extendedLine(const Vec4i& line, double d, double max_coeff) {
     const auto length = hypot(line[2] - line[0], line[3] - line[1]);
     const auto coeff = std::min(d / length, max_coeff);
     double xd = (line[2] - line[0]) * coeff;
     double yd = (line[3] - line[1]) * coeff;
-    return Vec4d(line[0] - xd, line[1] - yd, line[2] + xd, line[3] + yd);
+    return Vec4f(line[0] - xd, line[1] - yd, line[2] + xd, line[3] + yd);
 }
 
-std::vector<Point2i> boundingRectangleContour(const Vec4i& line, float d) {
+std::array<Point2f, 4> boundingRectangleContour(const Vec4i& line, float d) {
     // finds coordinates of perpendicular lines with length d in both line points
     const auto length = hypot(line[2] - line[0], line[3] - line[1]);
     const auto coeff = d / length;
@@ -54,11 +54,11 @@ std::vector<Point2i> boundingRectangleContour(const Vec4i& line, float d) {
     double yd = (line[2] - line[0]) * coeff;
     double xd = -(line[3] - line[1]) * coeff;
 
-    return std::vector<Point2i> {
-        Point2i(line[0]-xd, line[1]-yd),
-        Point2i(line[0]+xd, line[1]+yd),
-        Point2i(line[2]+xd, line[3]+yd),
-        Point2i(line[2]-xd, line[3]-yd)
+    return  {
+        Point2f(line[0]-xd, line[1]-yd),
+        Point2f(line[0]+xd, line[1]+yd),
+        Point2f(line[2]+xd, line[3]+yd),
+        Point2f(line[2]-xd, line[3]-yd)
     };
 }
 
@@ -66,18 +66,18 @@ bool extendedBoundingRectangleLineEquivalence(const Vec4i& l1, const Vec4i& l2,
     float extensionLength, float extensionLengthMaxFraction,
     float boundingRectangleThickness) {
 
-    Vec4i el1 = extendedLine(l1, extensionLength, extensionLengthMaxFraction);
-    Vec4i el2 = extendedLine(l2, extensionLength, extensionLengthMaxFraction);
+    const auto el1 = extendedLine(l1, extensionLength, extensionLengthMaxFraction);
+    const auto el2 = extendedLine(l2, extensionLength, extensionLengthMaxFraction);
 
     // calculate window around extended line
     // at least one point needs to inside extended bounding rectangle of other line,
-    std::vector<Point2i> lineBoundingContour = boundingRectangleContour(el1, boundingRectangleThickness / 2);
+    const auto lineBoundingContour = boundingRectangleContour(el1, boundingRectangleThickness / 2);
     return
-        pointPolygonTest(lineBoundingContour, cv::Point(el2[0], el2[1]), false) >= 0 ||
-        pointPolygonTest(lineBoundingContour, cv::Point(el2[2], el2[3]), false) >= 0 ||
+        pointPolygonTest(lineBoundingContour, { el2[0], el2[1] }, false) >= 0 ||
+        pointPolygonTest(lineBoundingContour, { el2[2], el2[3] }, false) >= 0 ||
 
-        pointPolygonTest(lineBoundingContour, cv::Point(l2[0], l2[1]), false) >= 0 ||
-        pointPolygonTest(lineBoundingContour, cv::Point(l2[2], l2[3]), false) >= 0;
+        pointPolygonTest(lineBoundingContour, Point2f(l2[0], l2[1]), false) >= 0 ||
+        pointPolygonTest(lineBoundingContour, Point2f(l2[2], l2[3]), false) >= 0;
 }
 
 Vec4i HandlePointCloud(const std::vector<Point2i>& pointCloud) {
@@ -1881,7 +1881,7 @@ int main(int argc, char *argv[])
         }), reducedLines0.end());
     }
 
-    auto reducedLines = reduceLines(reducedLines0, 50, 0.7, 2.5);
+    auto reducedLines = reduceLines(reducedLines0, 50, 0.7, 2.7);
 
     //reducedLines.erase(std::remove_if(reducedLines.begin(), reducedLines.end(), [](const Vec4i& line) {
     //    return hypot(line[2] - line[0], line[3] - line[1]) <= 10;
