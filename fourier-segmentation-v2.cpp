@@ -36,6 +36,55 @@ namespace {
 
 using namespace cv;
 
+
+void doFindPath(const cv::Mat& mat, const cv::Point& pt, cv::Point& final, int vertical, float cumulativeAngle)
+{
+    if (pt.x < 0 || pt.x >= mat.cols || pt.y < 0 || pt.y >= mat.rows)
+        return;
+
+    int dist = pt.y - final.y;
+
+    if (abs(vertical) > ((dist > 5)? 1 : 5))
+        return;
+
+    if (fabs(cumulativeAngle) > ((dist > 5) ? 1.8 : 10.))
+        return;
+
+    if (mat.at<uchar>(pt) == 0)
+        return;
+
+    if (final.y > pt.y)
+        final = pt;
+
+    cumulativeAngle *= 0.8;
+
+    doFindPath(mat, Point(pt.x, pt.y - 1), final, 0, cumulativeAngle);
+    doFindPath(mat, Point(pt.x + 1, pt.y - 1), final, 0, cumulativeAngle + 0.5);
+    doFindPath(mat, Point(pt.x - 1, pt.y - 1), final, 0, cumulativeAngle - 0.5);
+    if (vertical >= 0)
+        doFindPath(mat, Point(pt.x + 1, pt.y), final, vertical + 1, cumulativeAngle + 1);
+    if (vertical <= 0)
+        doFindPath(mat, Point(pt.x - 1, pt.y), final, vertical - 1, cumulativeAngle - 1);
+}
+
+cv::Point FindPath(const cv::Mat& mat, const cv::Point& start)
+{
+    cv::Point pos = start;
+
+    while (pos.x >= 0 && (mat.at<uchar>(pos) == 0 || (doFindPath(mat, pos, pos, 0, 0), pos.y == start.y)))
+        --pos.x;
+
+    if (pos.x < 0)
+        return start;
+
+    //doFindPath(mat, pos, pos, 0, 0);
+
+    return pos;
+}
+
+
+//////////////////////////////////////////////////////////////////////////////
+
 auto extendedLine(const Vec4i& line, double d, double max_coeff) {
     const auto length = hypot(line[2] - line[0], line[3] - line[1]);
     const auto coeff = std::min(d / length, max_coeff);
@@ -1523,6 +1572,8 @@ int main(int argc, char *argv[])
 
     cv::ximgproc::thinning(dst, dst);
 
+    auto skeleton = dst.clone();
+
     //dst &= theMask;
 
     imshow("Thinning", dst);
@@ -2084,7 +2135,46 @@ int main(int argc, char *argv[])
 
 
 
+    // turtle stuff
 
+    std::vector<std::pair<Point, Point>> turtleLines;
+
+    const double correction_coeff = 0.2;
+
+    for (auto& kp : goodkeypoints)
+    {
+        cv::Point pos(kp.pt);
+        auto start = FindPath(skeleton, pos);
+
+        pos.x += kp.size * sin_phi * correction_coeff;
+        pos.y += kp.size * cos_phi * correction_coeff;
+
+        turtleLines.emplace_back(start, pos);
+    }
+
+    cv::Mat outSkeleton;
+    cv::drawKeypoints(skeleton, goodkeypoints, outSkeleton, { 0, 255, 0 });// , cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
+
+    for (auto& kp : goodkeypoints)
+    {
+        cv::Point pos(kp.pt);
+        auto start = FindPath(skeleton, pos);
+        int radius = 2;
+        int thickness = -1;
+        circle(outSkeleton, start, radius, { 0, 255, 0 }, thickness);
+        line(outSkeleton, pos, start, { 0, 255, 0 });
+        /*
+        const auto y_first = start.x * sin_phi + start.y * cos_phi;
+        const auto y_second = pos.x * sin_phi + pos.y * cos_phi;
+
+        const auto x_first = start.x * cos_phi - start.y * sin_phi;
+        const auto x_second = pos.x * cos_phi - pos.y * sin_phi;
+
+        line(outSkeleton, Point(x_first, y_first), Point(x_second, y_second), { 255, 0, 0 });
+        */
+    }
+
+    imshow("outSkeleton", outSkeleton);
 
 
 
