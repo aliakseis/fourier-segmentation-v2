@@ -2179,12 +2179,63 @@ int main(int argc, char *argv[])
     imshow("outSkeleton", outSkeleton);
 
 
+    // Merge turtleLines and reducedLines
+
+    std::vector<std::tuple<double, double, double, double, double>> result;
+
+    for (int i = 0; i < reducedLines.size() - 1; ++i) {
+        auto& first = reducedLines[i];
+        auto& second = reducedLines[i + 1];
+        //if (first[1] > second[1]) {
+        //    continue;
+        //}
+
+        auto y_first = first[1];
+        auto x_first = first[0];
+
+        auto y_second = (first[3] + second[3]) / 2.;
+        auto x_second = (first[2] + second[2]) / 2.;
 
 
+        for (auto& l : turtleLines)
+        {
+            if (l.second.x > first[2] && l.second.x < second[2])
+            {
+                y_first = l.first.y;
+                x_first = l.first.x;
+                y_second = l.second.y;
+                x_second = l.second.x;
+
+                break;
+            }
+        }
 
 
+        const auto y_first_rotated = first[0] * sin_phi + first[1] * cos_phi;
+        const auto y_second_rotated = x_second * sin_phi + y_second * cos_phi;
 
+        //const auto x_first = first[0] * cos_phi - first[1] * sin_phi;
+        //const auto x_second = second[0] * cos_phi - second[1] * sin_phi;
 
+        const auto diff = y_second_rotated - y_first_rotated;
+
+        result.push_back({ x_first, y_first, x_second, y_second, diff });
+    }
+
+    //auto qrwer = skeleton.clone();
+    Mat qrwer = Mat::zeros(dst.rows, dst.cols, CV_8UC3);
+
+    for (auto& line : result) {
+        Scalar color = Scalar(0, 255, 0);
+        //Scalar color = Scalar(255);
+        int radius = 2;
+        int thickness = -1;
+        circle(qrwer, Point(std::get<0>(line), std::get<1>(line)), radius, color, thickness);
+        circle(qrwer, Point(std::get<2>(line), std::get<3>(line)), radius, color, thickness);
+        cv::line(qrwer, Point(std::get<0>(line), std::get<1>(line)), Point(std::get<2>(line), std::get<3>(line)), color);
+    }
+
+    imshow("qrwer", qrwer);
 
 
     //imshow("funkyFunc", funkyFunc);
