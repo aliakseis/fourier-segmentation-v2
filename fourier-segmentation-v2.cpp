@@ -29,6 +29,8 @@
 
 #include <array>
 
+#include <deque>
+
 
 
 
@@ -1996,61 +1998,7 @@ int main(int argc, char *argv[])
     reducedLines.erase(std::find_if(reducedLines.rbegin(), reducedLines.rend(), approveLam).base(), reducedLines.end());
 
     // merge
-#if 1
-    for (int i = reducedLines.size(); --i >= 0;)
-    {
-        auto& line = reducedLines[i];
-        if (hypot(line[2] - line[0], line[3] - line[1]) > 40) {
-            continue;
-        }
-
-        auto val = sortLam(line);
-
-        double dist;
-        decltype(reducedLines)::iterator it;
-        if (i == 0) {
-            it = reducedLines.begin() + 1;
-            dist = sortLam(*it) - val;
-        }
-        else if (i == reducedLines.size() - 1) {
-            it = reducedLines.begin() + i - 2;
-            dist = val - sortLam(*it);
-        }
-        else {
-            const auto dist1 = val - sortLam(reducedLines[i - 1]);
-            const auto dist2 = sortLam(reducedLines[i + 1]) - val;
-            if (dist1 < dist2) {
-                it = reducedLines.begin() + i - 1;
-                dist = dist1;
-            }
-            else {
-                it = reducedLines.begin() + i + 1;
-                dist = dist2;
-            }
-        }
-
-        const auto distY = abs((line[1] + line[3]) / 2 - ((*it)[1] + (*it)[3]) / 2)
-            - (abs(line[1] - line[3]) + abs((*it)[1] - (*it)[3])) / 2;
-
-        const auto threshold = 2.5;
-        const auto thresholdY = 25;
-        if (dist > threshold || distY > thresholdY) {
-            reducedLines.erase(reducedLines.begin() + i);
-            continue;
-        }
-
-
-        std::vector<Point2i> pointCloud;
-        for (auto &detectedLine : { line , *it }) {
-            pointCloud.emplace_back(detectedLine[0], detectedLine[1]);
-            pointCloud.emplace_back(detectedLine[2], detectedLine[3]);
-        }
-
-        line = HandlePointCloud(pointCloud);
-
-        reducedLines.erase(it);
-    }
-#endif
+    MergeLines(reducedLines, sortLam);
 
     // normalize direction
     for (auto& line : reducedLines) {
@@ -2132,47 +2080,101 @@ int main(int argc, char *argv[])
     }
 
 
+    //////////////////////////////////////////////////////////////////////////
 
+    /*
 
+    // sort
+    auto keyPointsSortLam = [cos_phi, sin_phi](const KeyPoint& kp) {
+        double x_new = kp.pt.x * cos_phi - kp.pt.y * sin_phi;
+        return x_new;
+    };
+
+    std::sort(goodkeypoints.begin(), goodkeypoints.end(), [&keyPointsSortLam](const KeyPoint& kp1, const KeyPoint& kp2) {
+        return keyPointsSortLam(kp1) < keyPointsSortLam(kp2);
+    });
+
+    */
 
     // turtle stuff
 
-    std::vector<std::pair<Point, Point>> turtleLines;
+    std::deque<std::pair<Point, Point>> turtleLines;
 
     const double correction_coeff = 0.2;
 
-    for (auto& kp : goodkeypoints)
+    //for (auto& kp : goodkeypoints)
+    for (int i = goodkeypoints.size(); --i >= 0;)
     {
+        auto& kp = goodkeypoints[i];
         cv::Point pos(kp.pt);
         auto start = FindPath(skeleton, pos);
+
+        if (start.y > pos.y - 10)
+        {
+            goodkeypoints.erase(goodkeypoints.begin() + i);
+            continue;
+        }
 
         pos.x += kp.size * sin_phi * correction_coeff;
         pos.y += kp.size * cos_phi * correction_coeff;
 
-        turtleLines.emplace_back(start, pos);
+        turtleLines.emplace_front(start, pos);
+    }
+
+    for (int i = goodkeypoints.size(); --i >= 0;)
+    {
+        bool erase = false;
+        for (int j = goodkeypoints.size(); --j >= 0;)
+        {
+            if (i == j)
+                continue;
+            if (turtleLines[i].first == turtleLines[j].first && abs(turtleLines[i].second.x - turtleLines[j].second.x) < 10)
+            {
+                double y_i = CalcPoly(poly, std::clamp(turtleLines[i].second.x - WINDOW_DIMENSION_X / 2, x_min, x_max) * POLY_COEFF) + WINDOW_DIMENSION_Y / 2;
+                double y_j = CalcPoly(poly, std::clamp(turtleLines[j].second.x - WINDOW_DIMENSION_X / 2, x_min, x_max) * POLY_COEFF) + WINDOW_DIMENSION_Y / 2;
+                if (abs(y_j - turtleLines[j].second.y) < abs(y_i - turtleLines[i].second.y))
+                {
+                    erase = true;
+                    break;
+                }
+            }
+        }
+        if (erase)
+        {
+            goodkeypoints.erase(goodkeypoints.begin() + i);
+            turtleLines.erase(turtleLines.begin() + i);
+        }
     }
 
     cv::Mat outSkeleton;
     cv::drawKeypoints(skeleton, goodkeypoints, outSkeleton, { 0, 255, 0 });// , cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
 
-    for (auto& kp : goodkeypoints)
+    for (auto& l : turtleLines)
     {
-        cv::Point pos(kp.pt);
-        auto start = FindPath(skeleton, pos);
         int radius = 2;
         int thickness = -1;
-        circle(outSkeleton, start, radius, { 0, 255, 0 }, thickness);
-        line(outSkeleton, pos, start, { 0, 255, 0 });
-        /*
-        const auto y_first = start.x * sin_phi + start.y * cos_phi;
-        const auto y_second = pos.x * sin_phi + pos.y * cos_phi;
-
-        const auto x_first = start.x * cos_phi - start.y * sin_phi;
-        const auto x_second = pos.x * cos_phi - pos.y * sin_phi;
-
-        line(outSkeleton, Point(x_first, y_first), Point(x_second, y_second), { 255, 0, 0 });
-        */
+        circle(outSkeleton, l.first, radius, { 0, 255, 0 }, thickness);
+        line(outSkeleton, l.second, l.first, { 0, 255, 0 });
     }
+
+    //for (auto& kp : goodkeypoints)
+    //{
+    //    cv::Point pos(kp.pt);
+    //    auto start = FindPath(skeleton, pos);
+    //    int radius = 2;
+    //    int thickness = -1;
+    //    circle(outSkeleton, start, radius, { 0, 255, 0 }, thickness);
+    //    line(outSkeleton, pos, start, { 0, 255, 0 });
+    //    /*
+    //    const auto y_first = start.x * sin_phi + start.y * cos_phi;
+    //    const auto y_second = pos.x * sin_phi + pos.y * cos_phi;
+
+    //    const auto x_first = start.x * cos_phi - start.y * sin_phi;
+    //    const auto x_second = pos.x * cos_phi - pos.y * sin_phi;
+
+    //    line(outSkeleton, Point(x_first, y_first), Point(x_second, y_second), { 255, 0, 0 });
+    //    */
+    //}
 
     imshow("outSkeleton", outSkeleton);
 
