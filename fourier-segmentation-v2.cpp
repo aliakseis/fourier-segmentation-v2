@@ -20,6 +20,9 @@
 
 #include <ceres/ceres.h>
 
+#include <dlib/matrix.h>                                                                                                                                                                                           
+#include <dlib/svm.h>       
+
 #include "nanoflann.hpp"
 
 #include <iostream>
@@ -250,6 +253,36 @@ void MergeLines(std::vector<Vec4i>& reducedLines, T sortLam) {
 
         reducedLines.erase(it);
     }
+}
+
+void corner_detect_tomasi(cv::Mat& retImg, cv::Mat& tomasiRspImg)
+{
+    static int thresh_v_tomasi = 30;
+    static int thresh_max_tomasi = 400;
+
+    RNG rng(12345);
+
+    if (thresh_v_tomasi < 20) thresh_v_tomasi = 20;
+
+    double tomasi_min_rsp, tomasi_max_rsp;
+    minMaxLoc(tomasiRspImg, &tomasi_min_rsp, &tomasi_max_rsp, 0, 0, Mat());//Find the maximum and minimum angle response of tomasiRspImg, and their location, pass 0 for position parameter
+
+    //Mat retImg = gray.clone();
+    cvtColor(retImg, retImg, cv::COLOR_GRAY2BGR); // Make the original image grayscale and corner color
+    //Define the threshold and display the corner points in the ratio of thresh_v_tomasi / thresh_max_tomasi
+    float t = tomasi_min_rsp + ((double)thresh_v_tomasi / thresh_max_tomasi)*(tomasi_max_rsp - tomasi_min_rsp);
+    for (int row = 0; row < retImg.rows; row++)
+    {
+        for (int col = 0; col < retImg.cols; col++)
+        {
+            float v = tomasiRspImg.at<float>(row, col); // The angular response value detected by the shiTomasi corner point is a lot of 0, so circle drawing is reduced, so the program speed is faster than harris
+            if (v > t)
+            {
+                circle(retImg, Point(col, row), 2, Scalar(rng.uniform(0, 255), rng.uniform(0, 255), rng.uniform(0, 255)), 2, 8, 0);
+            }
+        }
+    }
+    imshow("title_tomasi", retImg);
 }
 
 } // namespace
@@ -1007,6 +1040,57 @@ int main(int argc, char *argv[])
 
     cv::resize(img, img, cv::Size(IMAGE_DIMENSION, IMAGE_DIMENSION), 0, 0, cv::INTER_LANCZOS4);
 
+    cv::Mat harris;
+    cv::cornerHarris(img, harris, 2, 3, 0.04);
+
+    //cv::imshow("harris", harris);
+
+    cv::dilate(harris, harris, cv::Mat());
+
+    double minVal;
+    double maxVal;
+    cv::minMaxLoc(harris, &minVal, &maxVal);
+    auto harrisThreshold = harris > 0.01 * maxVal;
+
+    cv::imshow("harrisThreshold", harrisThreshold);
+
+    //
+    {
+        std::vector<cv::Point2f> corners;
+        cv::goodFeaturesToTrack(img, corners, 10000, 0.05, 10);
+
+        cv::Mat copy;// = img.clone();
+        img.convertTo(copy, CV_8U);
+        int radius = 4;
+        for (size_t i = 0; i < corners.size(); i++)
+        {
+            circle(copy, corners[i], radius, 
+                Scalar(255), FILLED);
+        }
+        cv::imshow("goodFeaturesToTrack", copy);
+    }
+
+    //cv::Mat edges = cv::Mat::zeros(IMAGE_DIMENSION - 2, IMAGE_DIMENSION - 2, CV_8UC1);
+    //for (int y = 0; y < img.rows - 2; y++) {
+    //    for (int x = 0; x < img.cols - 2; x++) {
+    //        std::vector<std::tuple<float, int, int>> cells;
+    //        for (int xx = 0; xx < 3; ++xx)
+    //            for (int yy = 0; yy < 3; ++yy)
+    //            {
+    //                cells.emplace_back(img.at<float>(y + yy, x + xx), yy, xx);
+    //            }
+    //        std::partial_sort(cells.begin(), cells.begin() + 3, cells.end(), 
+    //            [](const auto& left, const auto& right) { return std::get<0>(left) < std::get<0>(right); }
+    //            );
+    //        if (std::get<1>(cells[0]) == 1 && std::get<2>(cells[0]) == 1 || std::get<1>(cells[1]) == 1 && std::get<2>(cells[1]) == 1
+    //            && std::get<0>(cells[2]) - std::get<0>(cells[1]) > std::get<0>(cells[1]) - std::get<0>(cells[0]))
+    //        {
+    //            edges.at<uchar>(y, x) = 255;
+    //        }
+    //    }
+    //}
+    //cv::imshow("edges", edges);
+
     //cv::Mat special(IMAGE_DIMENSION, IMAGE_DIMENSION, CV_8UC1);
     //for (int y = 0; y < img.rows; y++) {
     //    for (int x = 0; x < img.cols; x++) {
@@ -1064,6 +1148,75 @@ int main(int argc, char *argv[])
     // !!!
     dst = func.clone();
 
+    cv::Mat edges = cv::Mat::zeros(IMAGE_DIMENSION - 2, IMAGE_DIMENSION - 2, CV_8UC1);
+    for (int y = 0; y < funcFloat.rows - 2; y++) {
+        for (int x = 0; x < funcFloat.cols - 2; x++) {
+            std::vector<std::tuple<float, int, int>> cells;
+            for (int xx = 0; xx < 3; ++xx)
+                for (int yy = 0; yy < 3; ++yy)
+                {
+                    cells.emplace_back(funcFloat.at<float>(y + yy, x + xx), yy, xx);
+                }
+            std::partial_sort(cells.begin(), cells.begin() + 3, cells.end(),
+                [](const auto& left, const auto& right) { return std::get<0>(left) < std::get<0>(right); }
+            );
+            //if ((std::get<1>(cells[0]) == 1 && std::get<2>(cells[0]) == 1 || std::get<1>(cells[1]) == 1 && std::get<2>(cells[1]) == 1)
+            //    && std::get<0>(cells[2]) - std::get<0>(cells[1]) > std::get<0>(cells[1]) - std::get<0>(cells[0])
+            //    && std::get<0>(cells[2]) - std::get<0>(cells[1]) > 2
+            //    )
+            if ((std::get<1>(cells[0]) == 1 && std::get<2>(cells[0]) == 1 && std::get<1>(cells[1]) == 2
+                || std::get<1>(cells[1]) == 1 && std::get<2>(cells[1]) == 1 && std::get<1>(cells[0]) == 2)
+                && std::get<0>(cells[2]) - std::get<0>(cells[1]) > std::get<0>(cells[1]) - std::get<0>(cells[0])
+                //&& std::get<0>(cells[2]) - std::get<0>(cells[1]) > 2
+                )
+            {
+                edges.at<uchar>(y, x) = 255;
+            }
+        }
+    }
+    cv::imshow("edges", edges);
+
+
+    cv::Mat harris2;
+    cv::cornerHarris(dst, harris2, 2, 3, 0.04);
+
+    //cv::imshow("harris", harris);
+
+    cv::dilate(harris2, harris2, cv::Mat());
+
+    double minVal2;
+    double maxVal2;
+    cv::minMaxLoc(harris2, &minVal2, &maxVal2);
+    auto harrisThreshold2 = harris2 > 0.01 * maxVal2;
+
+    cv::imshow("harrisThreshold2", harrisThreshold2);
+
+    //
+    {
+        std::vector<cv::Point2f> corners;
+        cv::goodFeaturesToTrack(dst, corners, 10000, 0.01, 10);
+
+        cv::Mat copy;// = img.clone();
+        dst.convertTo(copy, CV_8U);
+        int radius = 4;
+        for (size_t i = 0; i < corners.size(); i++)
+        {
+            circle(copy, corners[i], radius, Scalar(255), FILLED);
+            circle(copy, corners[i], radius, Scalar(0));
+        }
+        cv::imshow("goodFeaturesToTrack2", copy);
+    }
+
+    cv:Mat tomasiRspImg = Mat::zeros(src.size(), CV_32FC1);
+    //Calculate the minimum eigenvalue, namely ShiTomasi angle response value R = min(L1, L2)
+    int blockSize = 3;
+    int ksize = 3;
+    cv::cornerMinEigenVal(dst, tomasiRspImg, blockSize, ksize, BORDER_DEFAULT);
+    {
+        cv::Mat copy;// = img.clone();
+        dst.convertTo(copy, CV_8U);
+        corner_detect_tomasi(copy, tomasiRspImg);
+    }
 
 
     cv::Mat imgCoherency, imgOrientation;
@@ -1442,12 +1595,52 @@ int main(int argc, char *argv[])
         }
     }
 
+    //
+    auto df = []{
+        using namespace dlib;
+
+        typedef matrix<float, 0, 1> sample_type;
+        typedef radial_basis_kernel<sample_type> kernel_type;
+        svm_one_class_trainer<kernel_type> trainer;
+        trainer.set_nu(0.5); // control smoothness of the solution
+        trainer.set_kernel(kernel_type(0.5)); // kernel bandwidth
+        std::vector<sample_type> samples;
+
+        auto knownGood = GetKnownGood();
+        for (long r = 0; r < knownGood.rows; ++r) {
+            auto row = knownGood.row(r);
+
+            samples.push_back(dlib::mat((float*)row.data, row.cols));
+        }
+        //decision_function<kernel_type> df = 
+        return trainer.train(samples);
+    }();
 
 
     auto surf = cv::xfeatures2d::SURF::create(1700);
     std::vector<cv::KeyPoint> keypoints;
     cv::Mat descriptors;
     surf->detectAndCompute(func, cv::noArray(), keypoints, descriptors);
+
+    //*
+    std::vector< cv::KeyPoint > goodkeypoints;
+
+    for (int i = 0; i < descriptors.rows; ++i)
+    {
+        double dist_threshold = -4.0;
+
+        auto row = descriptors.row(i);
+        auto dist = df(dlib::mat((float*)row.data, row.cols));
+        if (dist > dist_threshold) 
+        {
+            double y = CalcPoly(poly, std::clamp(keypoints[i].pt.x - WINDOW_DIMENSION_X / 2, float(x_min), float(x_max)) * POLY_COEFF) + WINDOW_DIMENSION_Y / 2;
+            if (fabs(y - keypoints[i].pt.y) < 50)
+                goodkeypoints.push_back(keypoints[i]);
+        }
+    }
+    //*/
+
+    /*
 
     // http://itnotesblog.ru/note.php?id=271
     cv::FlannBasedMatcher matcher;
@@ -1464,6 +1657,8 @@ int main(int argc, char *argv[])
                 goodkeypoints.push_back(keypoints[i]);
         }
     }
+
+    //*/
 
     for (int i = goodkeypoints.size() - 1; --i >= 0;)
         for (int j = goodkeypoints.size(); --j > i;)
@@ -1659,6 +1854,16 @@ int main(int argc, char *argv[])
             || l[0] < border && l[2] < border || l[1] == 0 && l[3] == 0
             || l[0] >= (dst.cols - border) && l[2] >= (dst.cols - border) || l[1] == dst.rows - 1 && l[3] == dst.rows - 1;
     }), linesP.end());
+
+
+    auto kingThreshold = std::min(
+        CalcPoly(poly, x_min * POLY_COEFF) + WINDOW_DIMENSION_Y / 2,
+        CalcPoly(poly, x_max * POLY_COEFF) + WINDOW_DIMENSION_Y / 2) - 120;
+
+    linesP.erase(std::remove_if(linesP.begin(), linesP.end(), [kingThreshold](const Vec4i& l) {
+        return l[1] < kingThreshold && l[3] < kingThreshold;
+    }), linesP.end());
+
 
     auto angleSortLam = [](const Vec4i& l) {
         return double(l[0] - l[2]) / (l[1] - l[3]);
@@ -2031,7 +2236,7 @@ int main(int argc, char *argv[])
     }
 
     // Cutting lines
-    const auto removeThreshold = 15;
+    const auto removeThreshold = 40;
     for (int i = reducedLines.size(); --i >= 0;)
     {
         auto& line = reducedLines[i];
