@@ -34,7 +34,7 @@
 
 #include <deque>
 
-
+#include <set>
 
 
 namespace {
@@ -42,9 +42,14 @@ namespace {
 using namespace cv;
 
 
-void doFindPath(const cv::Mat& mat, const cv::Point& pt, cv::Point& final, int vertical, float cumulativeAngle)
+void 
+doFindPath(const cv::Mat& mat, const cv::Point& pt, cv::Point& final, int vertical, float cumulativeAngle
+    , std::set<std::pair<int, int>>& passed = std::array<std::set<std::pair<int, int>>, 1>()[0])
 {
     if (pt.x < 0 || pt.x >= mat.cols || pt.y < 0 || pt.y >= mat.rows)
+        return;
+
+    if (!passed.emplace(pt.x, pt.y).second)
         return;
 
     int dist = pt.y - final.y;
@@ -63,20 +68,21 @@ void doFindPath(const cv::Mat& mat, const cv::Point& pt, cv::Point& final, int v
 
     cumulativeAngle *= 0.8;
 
-    doFindPath(mat, Point(pt.x, pt.y - 1), final, 0, cumulativeAngle);
-    doFindPath(mat, Point(pt.x + 1, pt.y - 1), final, 0, cumulativeAngle + 0.5);
-    doFindPath(mat, Point(pt.x - 1, pt.y - 1), final, 0, cumulativeAngle - 0.5);
+    doFindPath(mat, Point(pt.x, pt.y - 1), final, 0, cumulativeAngle, passed);
+    doFindPath(mat, Point(pt.x + 1, pt.y - 1), final, 0, cumulativeAngle + 0.5, passed);
+    doFindPath(mat, Point(pt.x - 1, pt.y - 1), final, 0, cumulativeAngle - 0.5, passed);
     if (vertical >= 0)
-        doFindPath(mat, Point(pt.x + 1, pt.y), final, vertical + 1, cumulativeAngle + 1);
+        doFindPath(mat, Point(pt.x + 1, pt.y), final, vertical + 1, cumulativeAngle + 1, passed);
     if (vertical <= 0)
-        doFindPath(mat, Point(pt.x - 1, pt.y), final, vertical - 1, cumulativeAngle - 1);
+        doFindPath(mat, Point(pt.x - 1, pt.y), final, vertical - 1, cumulativeAngle - 1, passed);
 }
 
 cv::Point FindPath(const cv::Mat& mat, const cv::Point& start)
 {
     cv::Point pos = start;
 
-    while (pos.x >= 0 && (mat.at<uchar>(pos) == 0 || (doFindPath(mat, pos, pos, 0, 0), pos.y == start.y)))
+    while (pos.x >= 0 && (mat.at<uchar>(pos) == 0 
+        || (doFindPath(mat, pos, pos, 0, 0), pos.y == start.y)))
         --pos.x;
 
     if (pos.x < 0)
@@ -257,20 +263,22 @@ void MergeLines(std::vector<Vec4i>& reducedLines, T sortLam) {
 
 void corner_detect_tomasi(cv::Mat& retImg, cv::Mat& tomasiRspImg)
 {
-    static int thresh_v_tomasi = 30;
-    static int thresh_max_tomasi = 400;
+    //static int thresh_v_tomasi = 30;
+    //static int thresh_max_tomasi = 400;
 
     RNG rng(12345);
 
-    if (thresh_v_tomasi < 20) thresh_v_tomasi = 20;
+    //if (thresh_v_tomasi < 20) thresh_v_tomasi = 20;
 
     double tomasi_min_rsp, tomasi_max_rsp;
     minMaxLoc(tomasiRspImg, &tomasi_min_rsp, &tomasi_max_rsp, 0, 0, Mat());//Find the maximum and minimum angle response of tomasiRspImg, and their location, pass 0 for position parameter
 
+    const double coeff = 0.03;
+
     //Mat retImg = gray.clone();
     cvtColor(retImg, retImg, cv::COLOR_GRAY2BGR); // Make the original image grayscale and corner color
     //Define the threshold and display the corner points in the ratio of thresh_v_tomasi / thresh_max_tomasi
-    float t = tomasi_min_rsp + ((double)thresh_v_tomasi / thresh_max_tomasi)*(tomasi_max_rsp - tomasi_min_rsp);
+    float t = tomasi_min_rsp + coeff * (tomasi_max_rsp - tomasi_min_rsp);
     for (int row = 0; row < retImg.rows; row++)
     {
         for (int col = 0; col < retImg.cols; col++)
@@ -1135,6 +1143,30 @@ int main(int argc, char *argv[])
     dst += 1.;
     cv::log(dst, dst);
 
+    /*
+    {
+        int blockSize = 3;
+        int ksize = 3;
+
+        cv::Mat eigenValsAndVecs;
+        cv::cornerEigenValsAndVecs(dst, eigenValsAndVecs, blockSize, ksize, BORDER_DEFAULT);
+        std::vector<cv::Mat> esplit(6);
+        cv::split(eigenValsAndVecs, esplit);
+        for (int i = 0; i < 6; ++i)
+        {
+            normalize(esplit[i], esplit[i], 0, (i < 2) ? 10 : 1, cv::NORM_MINMAX);
+            cv::imshow("first_esplit" + std::to_string(i), esplit[i]);
+        }
+    }
+    */
+
+    cv::Mat tomasiRspImg = Mat::zeros(dst.size(), CV_32FC1);
+    //Calculate the minimum eigenvalue, namely ShiTomasi angle response value R = min(L1, L2)
+    int blockSize = 3;
+    int ksize = 3;
+    cv::cornerMinEigenVal(dst, tomasiRspImg, blockSize, ksize, BORDER_DEFAULT);
+
+
     cv::Mat stripeless;
     GaussianBlur(dst, stripeless, cv::Size(63, 1), 0, 0, cv::BORDER_DEFAULT);
 
@@ -1207,11 +1239,30 @@ int main(int argc, char *argv[])
         cv::imshow("goodFeaturesToTrack2", copy);
     }
 
-    cv:Mat tomasiRspImg = Mat::zeros(src.size(), CV_32FC1);
-    //Calculate the minimum eigenvalue, namely ShiTomasi angle response value R = min(L1, L2)
-    int blockSize = 3;
-    int ksize = 3;
-    cv::cornerMinEigenVal(dst, tomasiRspImg, blockSize, ksize, BORDER_DEFAULT);
+    //cv::Mat tomasiRspImg = Mat::zeros(src.size(), CV_32FC1);
+    ////Calculate the minimum eigenvalue, namely ShiTomasi angle response value R = min(L1, L2)
+    //int blockSize = 3;
+    //int ksize = 3;
+    //cv::cornerMinEigenVal(dst, tomasiRspImg, blockSize, ksize, BORDER_DEFAULT);
+
+    {
+        cv::Mat copy = tomasiRspImg.clone();
+        normalize(copy, copy, 0, 10, cv::NORM_MINMAX);
+        cv::imshow("tomasiRspImg", copy);
+    }
+
+    {
+        cv::Mat eigenValsAndVecs;
+        cv::cornerEigenValsAndVecs(dst, eigenValsAndVecs, blockSize, ksize, BORDER_DEFAULT);
+        std::vector<cv::Mat> esplit(6);
+        cv::split(eigenValsAndVecs, esplit);
+        for (int i = 0; i < 6; ++i)
+        {
+            normalize(esplit[i], esplit[i], 0, (i < 2)? 10 : 1, cv::NORM_MINMAX);
+            cv::imshow("esplit" + std::to_string(i), esplit[i]);
+        }
+    }
+
     {
         cv::Mat copy;// = img.clone();
         dst.convertTo(copy, CV_8U);
@@ -1617,28 +1668,10 @@ int main(int argc, char *argv[])
     }();
 
 
-    auto surf = cv::xfeatures2d::SURF::create(1700);
+    auto surf = cv::xfeatures2d::SURF::create(400);
     std::vector<cv::KeyPoint> keypoints;
     cv::Mat descriptors;
     surf->detectAndCompute(func, cv::noArray(), keypoints, descriptors);
-
-    //*
-    std::vector< cv::KeyPoint > goodkeypoints;
-
-    for (int i = 0; i < descriptors.rows; ++i)
-    {
-        double dist_threshold = -4.0;
-
-        auto row = descriptors.row(i);
-        auto dist = df(dlib::mat((float*)row.data, row.cols));
-        if (dist > dist_threshold) 
-        {
-            double y = CalcPoly(poly, std::clamp(keypoints[i].pt.x - WINDOW_DIMENSION_X / 2, float(x_min), float(x_max)) * POLY_COEFF) + WINDOW_DIMENSION_Y / 2;
-            if (fabs(y - keypoints[i].pt.y) < 50)
-                goodkeypoints.push_back(keypoints[i]);
-        }
-    }
-    //*/
 
     /*
 
@@ -1649,8 +1682,62 @@ int main(int argc, char *argv[])
 
     std::vector< cv::KeyPoint > goodkeypoints;
 
+    for (int i = 0; i < descriptors.rows; ++i)
+    {
+        if (keypoints[i].size < 5 || keypoints[i].size > 50)
+            continue;
+
+        if (matches[i].distance > 0.33)
+            continue;
+
+        const double dist_threshold = -2.5; //-2.0;
+
+        auto row = descriptors.row(i);
+        auto dist = df(dlib::mat((float*)row.data, row.cols));
+        if (dist > dist_threshold) 
+        {
+            double y = CalcPoly(poly, std::clamp(keypoints[i].pt.x - WINDOW_DIMENSION_X / 2, float(x_min), float(x_max)) * POLY_COEFF) + WINDOW_DIMENSION_Y / 2;
+            if (fabs(y - keypoints[i].pt.y) < 50)
+            {
+                goodkeypoints.push_back(keypoints[i]);
+                //std::cout << keypoints[i].size << ',';
+            }
+        }
+    }
+    //std::cout << '\n';
+    //*/
+
+    //*
+
+    // http://itnotesblog.ru/note.php?id=271
+    cv::FlannBasedMatcher matcher;
+    std::vector< cv::DMatch > matches;
+    matcher.match(descriptors, GetKnownGood(), matches);
+
+    std::vector< cv::KeyPoint > goodkeypoints;
+
+    double tomasi_min_rsp, tomasi_max_rsp;
+    minMaxLoc(tomasiRspImg, &tomasi_min_rsp, &tomasi_max_rsp, 0, 0, Mat());//Find the maximum and minimum angle response of tomasiRspImg, and their location, pass 0 for position parameter
+    const double tomasi_coeff = 0.02;
+    const float tomasi_t = tomasi_min_rsp + tomasi_coeff * (tomasi_max_rsp - tomasi_min_rsp);
+
     for (int i = 0; i < descriptors.rows; i++) {
-        if (matches[i].distance < 0.33) 
+        if (keypoints[i].size < 5 || keypoints[i].size > 50)
+            continue;
+
+        //if (tomasiRspImg.at<float>(keypoints[i].pt.y, keypoints[i].pt.x) < tomasi_t)
+        //    continue;
+
+        enum { HALF_SIZE = 5 };
+        float v = tomasi_min_rsp;
+        for (int y = std::max(int(keypoints[i].pt.y + 0.5) - HALF_SIZE, 0); y <= std::min(int(keypoints[i].pt.y + 0.5) + HALF_SIZE, tomasiRspImg.rows - 1); ++y)
+            for (int x = std::max(int(keypoints[i].pt.x + 0.5) - HALF_SIZE, 0); x <= std::min(int(keypoints[i].pt.x + 0.5) + HALF_SIZE, tomasiRspImg.cols - 1); ++x)
+                v = std::max(v, tomasiRspImg.at<float>(y, x));
+
+        if (v < tomasi_t)
+            continue;
+
+        if (matches[i].distance < 0.33)
         {
             double y = CalcPoly(poly, std::clamp(keypoints[i].pt.x - WINDOW_DIMENSION_X / 2, float(x_min), float(x_max)) * POLY_COEFF) + WINDOW_DIMENSION_Y / 2;
             if (fabs(y - keypoints[i].pt.y) < 50)
